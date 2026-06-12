@@ -17,7 +17,7 @@ with each other physically. A HUD shows speed, lap, and live race position.
 - Smooth, intuitive controls
 - Multiplayer over the internet, max 4 players per room
 - Player-vs-player collision detection
-- HUD with speed and live race positions
+- HUD with speed, lap, live race positions, lap time, total time, and a track map
 - Lobby system with room codes; host-controlled race start
 
 ## Key Decisions
@@ -126,8 +126,9 @@ racinggame/
 - **Title screen:** name entry, Create Lobby, Join Lobby (code input).
 - **Lobby screen:** room code display, player list with car picks, car picker,
   Start button (host only; disabled for others).
-- **HUD:** speedometer (km/h), lap `n/3`, position `nth/total`, countdown
-  overlay, wrong-way indicator.
+- **HUD:** speedometer (km/h), lap `n/3`, position `nth/total`, current lap
+  time, total race time, track map (top-down minimap of the circuit with live
+  car dots), countdown overlay, wrong-way indicator.
 - **Results screen:** final standings table, back-to-lobby button.
 
 ## Performance Budget
@@ -161,4 +162,4 @@ racinggame/
 
 - Server-authoritative physics / anti-cheat
 - Multiple tracks, reconnection, spectators, mobile/touch controls, audio,
-  minimap, postprocessing effects
+  postprocessing effects
