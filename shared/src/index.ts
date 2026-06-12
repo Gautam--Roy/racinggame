@@ -1,1 +1,1 @@
-// Placeholder for shared module
+export * from './protocol';
