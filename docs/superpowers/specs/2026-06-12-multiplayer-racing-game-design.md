@@ -68,7 +68,8 @@ racinggame/
   racing state.
 - Each client reports its own finish (3 laps done) with its local race time;
   server collates into final standings and broadcasts results when all finish
-  (or a post-first-finish timeout elapses, e.g. 60 s).
+  (or 60 s after the first finisher, whichever comes first; non-finishers are
+  ranked by race progress).
 
 ### State relay
 - Receives each client's car transform + race progress ~20×/s, rebroadcasts to
@@ -159,5 +160,5 @@ racinggame/
 ## Out of Scope (v1)
 
 - Server-authoritative physics / anti-cheat
-- Multiple tracks, reconnection, spectators, mobile/touch controls, audio
-  beyond basics, minimap, postprocessing effects
+- Multiple tracks, reconnection, spectators, mobile/touch controls, audio,
+  minimap, postprocessing effects
