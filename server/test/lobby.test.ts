@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { progressScore } from '../../shared/src/protocol';
 import { LobbyManager, Room } from '../src/lobby';
 
 const seq = (...vals: number[]) => {
@@ -138,5 +139,19 @@ describe('Room results', () => {
     expect(room.allFinished).toBe(false);
     room.removePlayer('p4');
     expect(room.allFinished).toBe(true);
+  });
+});
+
+describe('progressScore', () => {
+  it('a passed checkpoint always outranks any distance advantage', () => {
+    expect(progressScore({ passed: 1, dist: 9999 })).toBeGreaterThan(progressScore({ passed: 0, dist: 0 }));
+  });
+
+  it('closer to the next gate scores higher at equal checkpoints', () => {
+    expect(progressScore({ passed: 5, dist: 10 })).toBeGreaterThan(progressScore({ passed: 5, dist: 50 }));
+  });
+
+  it('clamps huge distances so they cannot cross a checkpoint boundary', () => {
+    expect(progressScore({ passed: 3, dist: 1e9 })).toBeGreaterThan(progressScore({ passed: 2, dist: 0 }));
   });
 });

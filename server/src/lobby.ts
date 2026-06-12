@@ -10,12 +10,7 @@ import {
 
 export type Phase = 'lobby' | 'racing';
 
-export interface Player {
-  id: string;
-  name: string;
-  car: CarModel;
-  isHost: boolean;
-}
+export interface Player extends PlayerInfo {}
 
 export class Room {
   phase: Phase = 'lobby';
@@ -69,7 +64,7 @@ export class Room {
   }
 
   recordProgress(id: string, pr: Progress): void {
-    this.progress.set(id, pr);
+    if (this.phase === 'racing') this.progress.set(id, pr);
   }
 
   recordFinish(id: string, timeMs: number): void {
