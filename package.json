@@ -24,7 +24,7 @@
     "url": "https://github.com/Gautam--Roy/racinggame/issues"
   },
   "homepage": "https://github.com/Gautam--Roy/racinggame#readme",
-  "private": "true",
+  "private": true,
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.19.3",
     "three": "^0.184.0",
