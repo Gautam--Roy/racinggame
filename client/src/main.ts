@@ -35,7 +35,7 @@ function onMessage(msg: ServerMsg): void {
       players = msg.players;
       screens.renderLobby(roomCode, players, selfId);
       screens.show('lobby');
-      preloadCars(); // load all 4 models during lobby so race start is instant
+      preloadCars().catch(() => {}); // warm all 4 models during lobby; missing models fall back per-car
       break;
     case 'lobby':
       players = msg.players;
@@ -43,7 +43,11 @@ function onMessage(msg: ServerMsg): void {
       break;
     case 'countdown': {
       const racers = players;
+      game?.dispose(); // defensive: never leak a prior race's world/renderer/RAF if a second countdown arrives
+      game = null;
       screens.show('none');
+      // state frames arriving before Game.create() resolves are dropped (game is null);
+      // benign — cars spawn at their grid pose and 120ms interpolation absorbs the gap.
       Game.create(canvas, selfId, racers, msg.grid, {
         sendState: (state) => socket?.send({ type: 'state', state }),
         sendFinished: (timeMs) => socket?.send({ type: 'finished', timeMs }),
