@@ -26,7 +26,7 @@ async function loadCarTemplate(model: CarModel): Promise<THREE.Group> {
   let group: THREE.Group;
   try {
     const gltf = await loader.loadAsync(`/models/cars/${model}.glb`);
-    group = normalize(gltf.scene);
+    group = normalizeCar(gltf.scene);
   } catch {
     console.warn(`model ${model}.glb missing — using fallback car`);
     group = fallbackCar(ACCENT[model]);
@@ -47,7 +47,7 @@ export async function instantiateCar(model: CarModel): Promise<THREE.Group> {
   return template.clone(true);
 }
 
-function normalize(scene: THREE.Group): THREE.Group {
+export function normalizeCar(scene: THREE.Group): THREE.Group {
   const wrapper = new THREE.Group();
   const box = new THREE.Box3().setFromObject(scene);
   const size = box.getSize(new THREE.Vector3());
@@ -55,7 +55,7 @@ function normalize(scene: THREE.Group): THREE.Group {
   scene.scale.setScalar(scale);
   const box2 = new THREE.Box3().setFromObject(scene);
   const center = box2.getCenter(new THREE.Vector3());
-  scene.position.sub(center).setY(scene.position.y - box2.min.y);
+  scene.position.set(-center.x, -box2.min.y, -center.z);
   const inner = new THREE.Group();
   inner.add(scene);
   inner.rotation.y = MODEL_YAW;
