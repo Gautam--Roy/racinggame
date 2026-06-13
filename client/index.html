@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Velocity Rush</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/src/ui/style.css" />
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+
+    <div id="menu" class="screen">
+      <h1>VELOCITY RUSH</h1>
+      <input id="name-input" maxlength="16" placeholder="Your name" />
+      <button id="create-btn">Create Lobby</button>
+      <div class="row">
+        <input id="code-input" maxlength="4" placeholder="CODE" />
+        <button id="join-btn">Join</button>
+      </div>
+      <p id="menu-error" class="error"></p>
+    </div>
+
+    <div id="lobby" class="screen hidden">
+      <h2>Lobby <span id="lobby-code"></span></h2>
+      <ul id="player-list"></ul>
+      <div id="car-picker"></div>
+      <button id="start-btn">Start Race</button>
+      <p id="lobby-hint"></p>
+    </div>
+
+    <div id="hud" class="hidden">
+      <div id="speed">0 km/h</div>
+      <div id="lap">Lap 1/3</div>
+      <div id="pos">1st/1</div>
+      <div id="laptime">Lap 0:00.0</div>
+      <div id="totaltime">Total 0:00.0</div>
+      <canvas id="minimap" width="200" height="200"></canvas>
+      <div id="countdown" class="hidden"></div>
+      <div id="wrongway" class="hidden">WRONG WAY</div>
+      <div id="waiting" class="hidden">Finished! Waiting for others…</div>
+    </div>
+
+    <div id="results" class="screen hidden">
+      <h2>Results</h2>
+      <table id="results-table"></table>
+      <button id="back-btn">Back to Lobby</button>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

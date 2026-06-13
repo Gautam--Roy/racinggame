@@ -1,0 +1,42 @@
+{
+  "name": "racinggame",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "dev": "vite",
+    "server": "tsx server/src/index.ts",
+    "bots": "tsx scripts/bots.ts",
+    "e2e": "tsx scripts/e2e.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gautam--Roy/racinggame.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/Gautam--Roy/racinggame/issues"
+  },
+  "homepage": "https://github.com/Gautam--Roy/racinggame#readme",
+  "private": true,
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.19.3",
+    "three": "^0.184.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.184.1",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.8"
+  }
+}
