@@ -10,7 +10,8 @@
     "test": "vitest run",
     "dev": "vite",
     "server": "tsx server/src/index.ts",
-    "bots": "tsx scripts/bots.ts"
+    "bots": "tsx scripts/bots.ts",
+    "e2e": "tsx scripts/e2e.ts"
   },
   "repository": {
     "type": "git",

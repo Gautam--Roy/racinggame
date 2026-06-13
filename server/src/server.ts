@@ -81,9 +81,13 @@ export function createGameServer(port: number): WebSocketServer {
     }
   }
 
+  wss.on('error', (e) => console.error('server error:', e.message));
+
   wss.on('connection', (ws) => {
     const conn: Conn = { ws, id: `p${nextId++}`, room: null };
     conns.set(conn.id, conn);
+
+    ws.on('error', () => {});
 
     ws.on('message', (data) => {
       let msg: ClientMsg;
@@ -102,12 +106,16 @@ export function createGameServer(port: number): WebSocketServer {
     ws.on('close', () => {
       conns.delete(conn.id);
       if (!conn.room) return;
+      const code = conn.room.code;
       const room = lobby.leave(conn.room.code, conn.id);
       conn.room = null;
       if (room) {
         broadcast(room, { type: 'playerLeft', id: conn.id });
         broadcast(room, { type: 'lobby', players: room.playerInfos() });
         maybeEndRace(room); // remaining players might now all be finished
+      } else {
+        clearTimeout(roomTimers.get(code));
+        roomTimers.delete(code);
       }
     });
   });

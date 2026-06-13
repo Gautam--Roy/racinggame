@@ -18,6 +18,7 @@ class Bot {
       this.msgs.push(msg);
       this.waiters = this.waiters.filter((w) => !w(msg));
     });
+    this.ws.on('error', (e) => fail(`${this.name}: ${e.message}`));
   }
 
   send(m: ClientMsg) {
