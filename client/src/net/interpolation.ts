@@ -29,7 +29,8 @@ export class SnapshotBuffer {
       if (s[i].t <= t) {
         const a = s[i];
         const b = s[i + 1];
-        const f = (t - a.t) / (b.t - a.t);
+        const dt = b.t - a.t;
+        const f = dt > 0 ? (t - a.t) / dt : 0;
         outP.set(
           a.p[0] + (b.p[0] - a.p[0]) * f,
           a.p[1] + (b.p[1] - a.p[1]) * f,

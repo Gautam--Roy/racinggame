@@ -49,4 +49,14 @@ describe('SnapshotBuffer', () => {
     buf.sample(0, p, q); // oldest retained is i=140
     expect(p.x).toBeCloseTo(140);
   });
+
+  it('handles duplicate timestamps without NaN', () => {
+    const buf = new SnapshotBuffer();
+    buf.push({ t: 100, p: [0, 0, 0], q: [0, 0, 0, 1] });
+    buf.push({ t: 100, p: [5, 0, 0], q: [0, 0, 0, 1] });
+    buf.push({ t: 200, p: [10, 0, 0], q: [0, 0, 0, 1] });
+    buf.sample(100, p, q);
+    expect(Number.isNaN(p.x)).toBe(false);
+    expect(Number.isNaN(q.w)).toBe(false);
+  });
 });
