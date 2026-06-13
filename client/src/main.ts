@@ -12,6 +12,7 @@ function connect(): Promise<GameSocket> {
   if (socket) return Promise.resolve(socket);
   const s = new GameSocket(onMessage, () => {
     socket = null;
+    selfId = ''; roomCode = ''; players = [];
     screens.show('menu');
     screens.showError('Disconnected from server');
   });
@@ -22,6 +23,7 @@ function onMessage(msg: ServerMsg): void {
   switch (msg.type) {
     case 'created':
     case 'joined':
+      screens.showError('');
       selfId = msg.selfId;
       roomCode = msg.code;
       players = msg.players;
