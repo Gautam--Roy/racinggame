@@ -8,10 +8,12 @@ export class Input {
     else this.keys.delete(e.code);
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
   };
+  private onBlur = () => this.keys.clear();
 
   constructor() {
     window.addEventListener('keydown', this.onKey);
     window.addEventListener('keyup', this.onKey);
+    window.addEventListener('blur', this.onBlur);
   }
 
   update(dt: number): void {
@@ -30,5 +32,6 @@ export class Input {
   dispose(): void {
     window.removeEventListener('keydown', this.onKey);
     window.removeEventListener('keyup', this.onKey);
+    window.removeEventListener('blur', this.onBlur);
   }
 }

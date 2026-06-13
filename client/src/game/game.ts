@@ -38,6 +38,9 @@ export class Game {
   private myMesh!: THREE.Group;
   private tracker = new CheckpointTracker(0, TOTAL_LAPS); // re-created with real cp count in create()
   private remotes = new Map<string, RemoteCar>();
+  private disposed = false;
+  private countdownTimer: ReturnType<typeof setTimeout> | null = null;
+  private started = false;
   private phase: 'countdown' | 'racing' | 'done' = 'countdown';
   private goTime = 0;
   private lapStart = 0;
@@ -103,20 +106,21 @@ export class Game {
   }
 
   start(countdownMs: number): void {
+    if (this.started || this.disposed) return; this.started = true;
     this.hud.show();
     this.hud.setLap(1, TOTAL_LAPS);
     this.goTime = performance.now() + countdownMs;
     const tick = () => {
-      if (this.phase !== 'countdown') return;
+      if (this.disposed || this.phase !== 'countdown') return;
       const left = this.goTime - performance.now();
       if (left <= 0) {
         this.phase = 'racing';
         this.lapStart = this.goTime;
         this.hud.setCountdown('GO!');
-        setTimeout(() => this.hud.setCountdown(null), 800);
+        this.countdownTimer = setTimeout(() => this.hud.setCountdown(null), 800);
       } else {
         this.hud.setCountdown(`${Math.ceil(left / 1000)}`);
-        setTimeout(tick, 100);
+        this.countdownTimer = setTimeout(tick, 100);
       }
     };
     tick();
@@ -140,6 +144,9 @@ export class Game {
   }
 
   dispose(): void {
+    this.disposed = true;
+    if (this.countdownTimer) clearTimeout(this.countdownTimer);
+    this.phase = 'done';
     cancelAnimationFrame(this.raf);
     this.input.dispose();
     this.hud.hide();
