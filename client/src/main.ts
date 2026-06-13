@@ -1,8 +1,8 @@
 import { PlayerInfo, ServerMsg } from '../../shared/src/protocol';
 import { GameSocket } from './net/socket';
 import { Screens } from './ui/screens';
-import { createScene } from './game/scene';
-import { buildTrack } from './game/track';
+import { Game } from './game/game';
+import { preloadCars } from './game/cars';
 
 const screens = new Screens();
 let socket: GameSocket | null = null;
@@ -62,18 +62,15 @@ screens.onBack = () => {
 
 screens.show('menu');
 
-// --- Task 10 temporary track verification block (removed in Task 12) ---
-if (location.search.includes('track')) {
+if (location.search.includes('practice')) {
   screens.show('none');
-  const ctx = createScene(document.getElementById('game') as HTMLCanvasElement);
-  ctx.scene.add(buildTrack().group);
-  ctx.camera.position.set(0, 220, 160);
-  ctx.camera.lookAt(0, 0, 0);
-  const spin = (t: number) => {
-    ctx.camera.position.set(Math.sin(t / 9000) * 260, 200, Math.cos(t / 9000) * 260);
-    ctx.camera.lookAt(0, 0, 0);
-    ctx.renderer.render(ctx.scene, ctx.camera);
-    requestAnimationFrame(spin);
-  };
-  requestAnimationFrame(spin);
+  const me = { id: 'solo', name: 'You', car: 'race' as const, isHost: true };
+  preloadCars(['race'])
+    .then(() =>
+      Game.create(document.getElementById('game') as HTMLCanvasElement, 'solo', [me], { solo: 0 }, {
+        sendState: () => {},
+        sendFinished: () => {},
+      }),
+    )
+    .then((game) => game.start(1500));
 }
