@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { CarState, PlayerInfo, Progress, STATE_HZ, TOTAL_LAPS } from '../../../shared/src/protocol';
+import { CarState, PlayerInfo, Progress, progressScore, STATE_HZ, TOTAL_LAPS } from '../../../shared/src/protocol';
 import { SnapshotBuffer } from '../net/interpolation';
 import { Hud } from '../ui/hud';
 import { ChaseCamera } from './camera';
@@ -172,7 +172,51 @@ export class Game {
   }
 
   private updateRaceLogic(): void {
-    // filled in by Task 13
+    if (this.phase !== 'racing') return;
+
+    // checkpoint crossing
+    const next = this.track.checkpoints[this.tracker.nextCp];
+    if (next && horizDist(this.currPos, next.pos) < CP_RADIUS) {
+      const result = this.tracker.hit(this.tracker.nextCp);
+      if (result === 'lap') {
+        this.hud.setLap(this.tracker.lap, TOTAL_LAPS);
+        this.lapStart = performance.now();
+      }
+      if (result === 'finish') {
+        this.phase = 'done';
+        const nowMs = performance.now();
+        this.hud.setTimes(nowMs - this.lapStart, nowMs - this.goTime); // freeze final times
+        this.hud.setWaiting(true);
+        this.hud.setWrongWay(false);
+        this.cb.sendFinished(Math.round(nowMs - this.goTime));
+        return;
+      }
+    }
+
+    // wrong-way: moving against the tangent of the nearest checkpoint
+    const lv = this.myBody.linvel();
+    const speed = Math.hypot(lv.x, lv.z);
+    if (speed > 4) {
+      let nearest = this.track.checkpoints[0];
+      let best = Infinity;
+      for (const cp of this.track.checkpoints) {
+        const d = horizDist(this.currPos, cp.pos);
+        if (d < best) {
+          best = d;
+          nearest = cp;
+        }
+      }
+      const along = lv.x * nearest.tangent.x + lv.z * nearest.tangent.z;
+      this.hud.setWrongWay(along < -3);
+    } else {
+      this.hud.setWrongWay(false);
+    }
+
+    // live position among all cars
+    const myScore = progressScore(this.myProgress());
+    let rank = 1;
+    for (const r of this.remotes.values()) if (progressScore(r.progress) > myScore) rank++;
+    this.hud.setPosition(rank, this.remotes.size + 1);
   }
 
   private myProgress(): Progress {
@@ -240,5 +284,3 @@ function horizDist(a: THREE.Vector3, b: THREE.Vector3): number {
   return Math.hypot(dx, dz);
 }
 
-// suppress unused variable warning for CP_RADIUS (used by Task 13)
-void CP_RADIUS;
