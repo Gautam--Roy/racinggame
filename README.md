@@ -6,7 +6,7 @@ simulates its own car at full fidelity (zero input latency); the server relays
 positions ~20×/sec and remote cars are interpolated, so player-vs-player
 collisions feel physical.
 
-![3 laps · up to 4 players · host-controlled start](docs/superpowers/specs/2026-06-12-multiplayer-racing-game-design.md)
+> **3 laps · up to 4 players · host decides when to start.**
 
 ## Run
 
