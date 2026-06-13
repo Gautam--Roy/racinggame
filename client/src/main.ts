@@ -1,20 +1,24 @@
 import { PlayerInfo, ServerMsg } from '../../shared/src/protocol';
+import { preloadCars } from './game/cars';
+import { Game } from './game/game';
 import { GameSocket } from './net/socket';
 import { Screens } from './ui/screens';
-import { Game } from './game/game';
-import { preloadCars } from './game/cars';
 
+const canvas = document.getElementById('game') as HTMLCanvasElement;
 const screens = new Screens();
 let socket: GameSocket | null = null;
 let selfId = '';
 let roomCode = '';
 let players: PlayerInfo[] = [];
+let game: Game | null = null;
 
 function connect(): Promise<GameSocket> {
   if (socket) return Promise.resolve(socket);
   const s = new GameSocket(onMessage, () => {
     socket = null;
     selfId = ''; roomCode = ''; players = [];
+    game?.dispose();
+    game = null;
     screens.show('menu');
     screens.showError('Disconnected from server');
   });
@@ -31,21 +35,39 @@ function onMessage(msg: ServerMsg): void {
       players = msg.players;
       screens.renderLobby(roomCode, players, selfId);
       screens.show('lobby');
+      preloadCars(); // load all 4 models during lobby so race start is instant
       break;
     case 'lobby':
       players = msg.players;
-      screens.renderLobby(roomCode, players, selfId);
+      if (!game) screens.renderLobby(roomCode, players, selfId);
+      break;
+    case 'countdown': {
+      const racers = players;
+      screens.show('none');
+      Game.create(canvas, selfId, racers, msg.grid, {
+        sendState: (state) => socket?.send({ type: 'state', state }),
+        sendFinished: (timeMs) => socket?.send({ type: 'finished', timeMs }),
+      }).then((g) => {
+        game = g;
+        g.start(msg.countdownMs);
+      });
+      break;
+    }
+    case 'state':
+      game?.onRemoteState(msg.id, msg.state);
+      break;
+    case 'playerLeft':
+      game?.onPlayerLeft(msg.id);
+      break;
+    case 'results':
+      game?.dispose();
+      game = null;
+      screens.renderResults(msg.standings);
+      screens.show('results');
       break;
     case 'error':
       screens.showError(msg.message);
       break;
-    case 'countdown':
-      console.log('countdown', msg); // replaced in Task 15
-      break;
-    case 'state':
-    case 'playerLeft':
-    case 'results':
-      break; // wired up in Tasks 14–15
   }
 }
 
@@ -60,17 +82,17 @@ screens.onBack = () => {
   screens.show('lobby');
 };
 
-screens.show('menu');
-
 if (location.search.includes('practice')) {
+  const me: PlayerInfo = { id: 'solo', name: 'You', car: 'race', isHost: true };
   screens.show('none');
-  const me = { id: 'solo', name: 'You', car: 'race' as const, isHost: true };
   preloadCars(['race'])
     .then(() =>
-      Game.create(document.getElementById('game') as HTMLCanvasElement, 'solo', [me], { solo: 0 }, {
-        sendState: () => {},
-        sendFinished: () => {},
-      }),
+      Game.create(canvas, 'solo', [me], { solo: 0 }, { sendState: () => {}, sendFinished: () => {} }),
     )
-    .then((game) => game.start(1500));
+    .then((g) => {
+      game = g;
+      g.start(1500);
+    });
+} else {
+  screens.show('menu');
 }
