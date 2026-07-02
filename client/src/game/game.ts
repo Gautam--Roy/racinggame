@@ -126,6 +126,8 @@ export class Game {
   private charges = 0;
   private turboUntil = 0;
   private slipBonus = 0;
+  private prevTurboActive = false;
+  private readonly slipScratch: THREE.Vector3[] = [];
 
   private get turboActive(): boolean {
     return performance.now() < this.turboUntil;
@@ -340,10 +342,16 @@ export class Game {
     OWN_FWD_SCRATCH.normalize();
     const lv = this.myBody.linvel();
     const speed = Math.hypot(lv.x, lv.z);
-    const remotePositions: THREE.Vector3[] = [];
-    for (const r of this.remotes.values()) remotePositions.push(r.mesh.position);
-    const target = slipstreamTarget(this.currPos, OWN_FWD_SCRATCH, speed, remotePositions);
+    this.slipScratch.length = 0;
+    for (const r of this.remotes.values()) this.slipScratch.push(r.mesh.position);
+    const target = slipstreamTarget(this.currPos, OWN_FWD_SCRATCH, speed, this.slipScratch);
     this.slipBonus += (target - this.slipBonus) * Math.min(1, SLIP_LERP * FIXED_DT);
+
+    const turboActive = this.turboActive;
+    if (this.prevTurboActive && !turboActive) {
+      this.hud.setTurbo(this.charges, false);
+    }
+    this.prevTurboActive = turboActive;
   }
 
   /** Wheel spin/steer, body tilt, and drift-smoke/turbo-flame emission for the local car. */
@@ -426,6 +434,9 @@ export class Game {
         this.hud.setTimes(nowMs - this.lapStart, nowMs - this.goTime); // freeze final times
         this.hud.setWaiting(true);
         this.hud.setWrongWay(false);
+        this.turboUntil = 0;
+        this.hud.setTurbo(this.charges, false);
+        this.cb.sendState(this.buildState()); // final state so remotes see turbo off
         this.cb.sendFinished(Math.round(nowMs - this.goTime));
         return;
       }
@@ -463,17 +474,21 @@ export class Game {
     return { passed: this.tracker.passed, dist };
   }
 
-  private netSend(dt: number): void {
-    this.sendTimer += dt;
-    if (this.sendTimer < 1 / STATE_HZ) return;
-    this.sendTimer = 0;
+  private buildState(): CarState {
     const state: CarState = {
       p: this.renderPos.toArray() as [number, number, number],
       q: this.renderQuat.toArray() as [number, number, number, number],
       progress: this.myProgress(),
     };
     if (this.turboActive) state.b = true; // omit when false to keep payloads lean
-    this.cb.sendState(state);
+    return state;
+  }
+
+  private netSend(dt: number): void {
+    this.sendTimer += dt;
+    if (this.sendTimer < 1 / STATE_HZ) return;
+    this.sendTimer = 0;
+    this.cb.sendState(this.buildState());
   }
 
   private loop = (now: number): void => {
