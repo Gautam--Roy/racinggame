@@ -25,10 +25,17 @@ html, body { height: 100%; overflow: hidden; background: #0b0e14; font-family: s
 
 #player-list { list-style: none; font-size: 20px; text-align: center; }
 #player-list li { padding: 4px 0; }
-#car-picker { display: flex; gap: 10px; }
-#car-picker button { background: #28304a; font-size: 14px; padding: 8px 14px; }
+#car-picker {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; max-width: 560px;
+}
+#car-picker button {
+  display: flex; align-items: center; gap: 6px; justify-content: center;
+  background: #28304a; font-size: 14px; padding: 8px 14px;
+}
 #car-picker button.mine { outline: 2px solid #e8463c; }
 #car-picker button.taken { opacity: 0.35; }
+.swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+#controls-hint { font-size: 13px; opacity: 0.55; }
 
 #hud { position: fixed; inset: 0; pointer-events: none; color: #fff; z-index: 5; }
 #hud > div { position: absolute; text-shadow: 0 2px 6px rgba(0,0,0,0.7); }

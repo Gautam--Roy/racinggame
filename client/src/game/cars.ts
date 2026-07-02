@@ -6,7 +6,7 @@ export const CAR_LENGTH = 3.6;
 /** Kenney models face +Z; our forward convention is −Z. Flip if cars appear to drive backwards. */
 const MODEL_YAW = Math.PI;
 
-const ACCENT: Record<CarModel, number> = {
+export const ACCENT: Record<CarModel, number> = {
   race: 0xd8342a,
   'race-future': 0x2a6fd8,
   'sedan-sports': 0x2ad860,
@@ -15,6 +15,17 @@ const ACCENT: Record<CarModel, number> = {
   police: 0x2a4ad8,
   taxi: 0xd8b02a,
   ambulance: 0xd84a4a,
+};
+
+export const CAR_DISPLAY: Record<CarModel, string> = {
+  race: 'Racer',
+  'race-future': 'Future GP',
+  'sedan-sports': 'Sport Sedan',
+  suv: 'SUV',
+  'hatchback-sports': 'Hot Hatch',
+  police: 'Police',
+  taxi: 'Taxi',
+  ambulance: 'Ambulance',
 };
 
 const loader = new GLTFLoader();
