@@ -14,6 +14,7 @@ import { buildTrack, curve, gridPose, ROAD_WIDTH, TrackData } from './track';
 import { findTiltTarget, findWheels, Wheels } from './cars';
 import { ParticleSystem } from './effects';
 import { buildPickups, Pickups, slipstreamTarget } from './pickups';
+import { buildSpectators, Spectators } from './spectators';
 
 const FIXED_DT = 1 / 60;
 const INTERP_DELAY_MS = 120;
@@ -123,6 +124,8 @@ export class Game {
   private myAnim!: CarAnim;
   readonly effects = new ParticleSystem();
   private pickups!: Pickups;
+  private spectators!: Spectators;
+  private readonly carPosScratch: THREE.Vector3[] = [];
   private charges = 0;
   private turboUntil = 0;
   private slipBonus = 0;
@@ -163,6 +166,9 @@ export class Game {
     game.hud.onMuteClick = () => game.hud.setMuted(game.audio.toggleMuted());
     game.ctx.scene.add(game.effects.points);
     game.pickups = buildPickups(game.ctx.scene, curve);
+    game.spectators = buildSpectators(curve);
+    game.ctx.scene.add(game.spectators.group);
+    game.audio.setCrowdSources(game.spectators.stands);
 
     for (const p of players) {
       const mesh = await instantiateCar(p.car);
@@ -255,6 +261,8 @@ export class Game {
     this.pickups.meshes[0]?.geometry.dispose();
     const mat = this.pickups.meshes[0]?.material;
     if (mat && !Array.isArray(mat)) mat.dispose();
+    this.ctx.scene.remove(this.spectators.group);
+    this.spectators.dispose();
     this.ctx.dispose();
   }
 
@@ -522,6 +530,11 @@ export class Game {
     this.effects.update(dt);
     this.pickups.update(now, dt);
 
+    this.carPosScratch.length = 0;
+    this.carPosScratch.push(this.renderPos);
+    for (const r of this.remotes.values()) this.carPosScratch.push(r.mesh.position);
+    this.spectators.update(now / 1000, this.carPosScratch);
+
     const lv = this.myBody.linvel();
     const speed = Math.hypot(lv.x, lv.z);
     this.hud.setSpeed(speed);
@@ -532,7 +545,14 @@ export class Game {
     );
     this.chase.update(this.renderPos, this.renderQuat, speed, dt, this.turboActive);
     this.audio.engine(speed / MAX_SPEED, this.turboActive);
-    this.audio.crowd(0); // Task 5: real proximity via setCrowdSources + nearest-stand distance
+    // crowd proximity is owned here (game.ts): nearest-stand distance from the own car,
+    // rather than inside AudioManager, since Game already tracks car/stand world positions.
+    let nearestStandDist = Infinity;
+    for (const s of this.spectators.stands) {
+      const d = horizDist(this.renderPos, s);
+      if (d < nearestStandDist) nearestStandDist = d;
+    }
+    this.audio.crowd(1 - Math.min(1, Math.max(0, nearestStandDist / 140)));
     if (this.phase === 'racing') this.netSend(dt);
     this.ctx.renderer.render(this.ctx.scene, this.ctx.camera);
   };
