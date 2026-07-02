@@ -19,6 +19,7 @@ const CROWD_BOB_FREQ = 2.2;
 const CROWD_BOB_AMP = 0.18;
 const CROWD_SWAY_AMP = 0.06;
 const CROWD_ENERGY_RADIUS = 45; // m — cars within this distance double bob amplitude
+const CROWD_ENERGY_LERP_RATE = 4; // 1/s — how fast a stand's energy ramps toward its target
 const CROWD_BODY_RADIUS = 0.22;
 const CROWD_BODY_HEIGHT = 0.9;
 const CROWD_HEAD_RADIUS = 0.16;
@@ -81,14 +82,17 @@ export function buildSpectators(curve: THREE.CatmullRomCurve3): Spectators {
   bodyGeo.translate(0, CROWD_BODY_HEIGHT / 2, 0);
   const headGeo = new THREE.SphereGeometry(CROWD_HEAD_RADIUS, 7, 6);
   headGeo.translate(0, CROWD_BODY_HEIGHT + CROWD_HEAD_RADIUS * 0.9, 0);
-  const personGeo = mergeGeometries([bodyGeo, headGeo], false) ?? bodyGeo;
-  bodyGeo.dispose();
-  headGeo.dispose();
+  const mergedPersonGeo = mergeGeometries([bodyGeo, headGeo], false);
+  const personGeo = mergedPersonGeo ?? bodyGeo;
+  if (mergedPersonGeo) {
+    bodyGeo.dispose();
+    headGeo.dispose();
+  }
   disposables.push({ geometry: personGeo });
 
   const instancedMeshes: THREE.InstancedMesh[] = [];
   const instancedData: StandInstanceData[] = [];
-  const instancedEnergized: Float32Array[] = []; // per-instance current bob energy (1 = normal, 2 = cheering)
+  const standEnergy: number[] = []; // per-stand smoothed bob energy (ramps toward 1 = normal, 2 = cheering)
 
   // ---- camera prop geometry (shared) ----
   const legGeo = new THREE.CylinderGeometry(0.03, 0.03, 1.1, 5);
@@ -212,7 +216,7 @@ export function buildSpectators(curve: THREE.CatmullRomCurve3): Spectators {
     standRoot.add(instanced);
     instancedMeshes.push(instanced);
     instancedData.push({ base, phase, angle });
-    instancedEnergized.push(new Float32Array(1).fill(1));
+    standEnergy.push(1);
 
     // TV camera at this stand's track-facing corner
     const rig = buildCameraProp();
@@ -245,6 +249,7 @@ export function buildSpectators(curve: THREE.CatmullRomCurve3): Spectators {
   const standWorldPos = stands; // already world-space centers, reused for proximity checks
   let frameCounter = 0;
   let lastT = 0;
+  let lastCrowdT = 0;
 
   function update(tSec: number, cars: THREE.Vector3[]): void {
     const dt = lastT === 0 ? 0 : Math.min(CAMERA_MAX_DT, Math.max(0, tSec - lastT));
@@ -254,10 +259,14 @@ export function buildSpectators(curve: THREE.CatmullRomCurve3): Spectators {
     const doCrowd = frameCounter % 2 === 0;
 
     if (doCrowd) {
+      const crowdDt = lastCrowdT === 0 ? 0 : Math.min(CAMERA_MAX_DT * 2, Math.max(0, tSec - lastCrowdT));
+      lastCrowdT = tSec;
+      const energyAlpha = crowdDt > 0 ? 1 - Math.exp(-CROWD_ENERGY_LERP_RATE * crowdDt) : 0;
       for (let s = 0; s < instancedMeshes.length; s++) {
         const mesh = instancedMeshes[s];
         const data = instancedData[s];
-        // energy: double amplitude if any car is within CROWD_ENERGY_RADIUS of this stand
+        // energy target: double amplitude if any car is within CROWD_ENERGY_RADIUS of this stand;
+        // smoothly ramp the stand's actual energy toward that target so amplitude doesn't pop.
         let energized = false;
         const standPos = standWorldPos[s];
         for (let c = 0; c < cars.length; c++) {
@@ -268,16 +277,17 @@ export function buildSpectators(curve: THREE.CatmullRomCurve3): Spectators {
             break;
           }
         }
-        const ampMul = energized ? 2 : 1;
+        const targetEnergy = energized ? 2 : 1;
+        standEnergy[s] += (targetEnergy - standEnergy[s]) * energyAlpha;
+        const ampMul = standEnergy[s];
         for (let i = 0; i < data.base.length; i++) {
           const b = data.base[i];
           const phase = data.phase[i];
           const bob = Math.abs(Math.sin(tSec * CROWD_BOB_FREQ + phase)) * CROWD_BOB_AMP * ampMul;
           const sway = Math.sin(tSec * CROWD_BOB_FREQ * 0.5 + phase) > 0 ? CROWD_SWAY_AMP : -CROWD_SWAY_AMP;
           scratchPos.set(b.x, b.y + bob, b.z);
-          scratchQuat.setFromAxisAngle(UP, data.angle[i]);
-          // apply a small extra roll via a secondary rotation around Z is not representable through
-          // a single axis-angle on Y alone; combine yaw with a Z-tilt using Euler.
+          // a yaw + Z-tilt sway isn't representable via a single axis-angle on Y alone,
+          // so encode both fully via Euler (yaw on Y, sway tilt on Z) in one composed rotation.
           EULER_SCRATCH.set(0, data.angle[i], sway);
           scratchQuat.setFromEuler(EULER_SCRATCH);
           scratchMat.compose(scratchPos, scratchQuat, scratchScale);
