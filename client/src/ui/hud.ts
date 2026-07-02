@@ -118,6 +118,12 @@ export class Hud {
     $('mute-btn').textContent = m ? '🔇' : '🔊';
   }
 
+  setTurbo(charges: number, active: boolean): void {
+    const el = $('turbo');
+    el.textContent = charges > 0 || active ? `⚡×${charges}` : '';
+    el.classList.toggle('boosting', active);
+  }
+
   /** Remove the mute-button listener so repeated Game/Hud construction across races doesn't accumulate listeners. */
   dispose(): void {
     $('mute-btn').removeEventListener('click', this.boundMuteClick);

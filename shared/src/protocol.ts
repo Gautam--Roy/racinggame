@@ -1,6 +1,7 @@
 export const MAX_PLAYERS = 4;
 export const TOTAL_LAPS = 3;
 export const STATE_HZ = 20;
+export const PICKUP_COUNT = 5;
 
 export const CAR_MODELS = [
   'race',

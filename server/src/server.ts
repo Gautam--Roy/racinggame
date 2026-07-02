@@ -1,5 +1,5 @@
 import { WebSocket, WebSocketServer } from 'ws';
-import { ClientMsg, ServerMsg } from '../../shared/src/protocol';
+import { ClientMsg, PICKUP_COUNT, ServerMsg } from '../../shared/src/protocol';
 import { LobbyManager, Room } from './lobby';
 
 const RESULTS_TIMEOUT_MS = 60_000;
@@ -83,7 +83,7 @@ export function createGameServer(port: number): WebSocketServer {
         break;
       }
       case 'pickup': {
-        if (conn.room?.phase === 'racing' && Number.isInteger(msg.idx) && msg.idx >= 0)
+        if (conn.room?.phase === 'racing' && Number.isInteger(msg.idx) && msg.idx >= 0 && msg.idx < PICKUP_COUNT)
           broadcast(conn.room, { type: 'pickup', idx: msg.idx, id: conn.id }, conn.id);
         break;
       }

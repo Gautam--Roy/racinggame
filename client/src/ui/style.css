@@ -43,6 +43,19 @@ html, body { height: 100%; overflow: hidden; background: #0b0e14; font-family: s
 #mute-btn:hover { background: rgba(10, 13, 20, 0.75); }
 #laptime { right: 28px; bottom: 84px; font-size: 20px; font-weight: 600; }
 #totaltime { right: 28px; bottom: 112px; font-size: 20px; font-weight: 600; color: #ffd24d; }
+#turbo {
+  right: 28px; bottom: 140px; font-size: 22px; font-weight: 800; color: #22ddee;
+  transition: color 0.15s, text-shadow 0.15s;
+}
+#turbo.boosting {
+  color: #ffb02a;
+  text-shadow: 0 0 10px rgba(255, 176, 42, 0.9), 0 2px 6px rgba(0,0,0,0.7);
+  animation: turbo-pulse 0.4s ease-in-out infinite;
+}
+@keyframes turbo-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
 #minimap { position: absolute; right: 20px; top: 20px; width: 170px; height: 170px; }
 #countdown { left: 50%; top: 38%; transform: translate(-50%, -50%); font-size: 110px; font-weight: 900; }
 #wrongway { left: 50%; top: 18%; transform: translateX(-50%); font-size: 34px; color: #ff5544; font-weight: 900; }

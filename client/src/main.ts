@@ -52,6 +52,7 @@ function onMessage(msg: ServerMsg): void {
         sendState: (state) => socket?.send({ type: 'state', state }),
         sendFinished: (timeMs) => socket?.send({ type: 'finished', timeMs }),
         sendHorn: () => socket?.send({ type: 'horn' }),
+        sendPickup: (idx) => socket?.send({ type: 'pickup', idx }),
       }).then((g) => {
         game = g;
         g.start(msg.countdownMs);
@@ -63,6 +64,9 @@ function onMessage(msg: ServerMsg): void {
       break;
     case 'horn':
       game?.onHorn(msg.id);
+      break;
+    case 'pickup':
+      game?.onPickup(msg.idx, msg.id);
       break;
     case 'playerLeft':
       game?.onPlayerLeft(msg.id);
@@ -99,6 +103,7 @@ if (location.search.includes('practice')) {
         sendState: () => {},
         sendFinished: () => {},
         sendHorn: () => {},
+        sendPickup: () => {},
       }),
     )
     .then((g) => {

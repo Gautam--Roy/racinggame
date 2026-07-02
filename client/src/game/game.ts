@@ -13,6 +13,7 @@ import { createScene, SceneCtx } from './scene';
 import { buildTrack, curve, gridPose, ROAD_WIDTH, TrackData } from './track';
 import { findTiltTarget, findWheels, Wheels } from './cars';
 import { ParticleSystem } from './effects';
+import { buildPickups, Pickups, slipstreamTarget } from './pickups';
 
 const FIXED_DT = 1 / 60;
 const INTERP_DELAY_MS = 120;
@@ -65,11 +66,18 @@ const FLAME_POS = new THREE.Vector3();
 const FLAME_VEL = new THREE.Vector3();
 const REMOTE_DELTA = new THREE.Vector3();
 const REMOTE_FWD = new THREE.Vector3();
+const OWN_FWD_SCRATCH = new THREE.Vector3();
+
+const TURBO_DURATION_MS = 2500;
+const TURBO_MAX_CHARGES = 2;
+const PICKUP_RADIUS = 3; // m
+const SLIP_LERP = 1.2; // 1/s
 
 export interface GameCallbacks {
   sendState: (state: CarState) => void;
   sendFinished: (timeMs: number) => void;
   sendHorn: () => void;
+  sendPickup: (idx: number) => void;
 }
 
 interface RemoteCar {
@@ -114,8 +122,14 @@ export class Game {
   private renderQuat = new THREE.Quaternion();
   private myAnim!: CarAnim;
   readonly effects = new ParticleSystem();
-  /** Task 4 sets this when a turbo pickup boost is active. */
-  private turboActive = false;
+  private pickups!: Pickups;
+  private charges = 0;
+  private turboUntil = 0;
+  private slipBonus = 0;
+
+  private get turboActive(): boolean {
+    return performance.now() < this.turboUntil;
+  }
 
   private constructor(
     private readonly selfId: string,
@@ -146,6 +160,7 @@ export class Game {
     game.hud.initMinimap(mapPts);
     game.hud.onMuteClick = () => game.hud.setMuted(game.audio.toggleMuted());
     game.ctx.scene.add(game.effects.points);
+    game.pickups = buildPickups(game.ctx.scene, curve);
 
     for (const p of players) {
       const mesh = await instantiateCar(p.car);
@@ -234,6 +249,10 @@ export class Game {
     this.audio.dispose();
     this.ctx.scene.remove(this.effects.points);
     this.effects.dispose();
+    for (const mesh of this.pickups.meshes) this.ctx.scene.remove(mesh);
+    this.pickups.meshes[0]?.geometry.dispose();
+    const mat = this.pickups.meshes[0]?.material;
+    if (mat && !Array.isArray(mat)) mat.dispose();
     this.ctx.dispose();
   }
 
@@ -245,6 +264,11 @@ export class Game {
     this.audio.horn(Math.min(1, dist / 120));
   }
 
+  /** Called by main.ts when a remote's pickup ServerMsg arrives; mirror their board state locally. */
+  onPickup(idx: number, _id: string): void {
+    this.pickups.board.take(idx, performance.now());
+  }
+
   private syncFromBody(): void {
     const t = this.myBody.translation();
     const r = this.myBody.rotation();
@@ -254,8 +278,12 @@ export class Game {
 
   private fixedStep(): void {
     this.input.update(FIXED_DT);
-    if (this.phase === 'racing') driveCar(this.myBody, this.input, FIXED_DT);
-    else freezeCar(this.myBody);
+    if (this.phase === 'racing') {
+      driveCar(this.myBody, this.input, FIXED_DT, { turbo: this.turboActive, slipBonus: this.slipBonus });
+      this.updateTurbo();
+    } else {
+      freezeCar(this.myBody);
+    }
     if (this.input.hornPressed) {
       this.cb.sendHorn();
       this.audio.horn(0);
@@ -281,6 +309,41 @@ export class Game {
     this.animateOwnCar(FIXED_DT);
 
     this.updateRaceLogic(); // Task 13
+  }
+
+  /** Pickup overlap/collection, Shift-to-boost, and slipstream draft — all local-first, mirrored over the wire. */
+  private updateTurbo(): void {
+    const now = performance.now();
+
+    for (let i = 0; i < this.pickups.meshes.length; i++) {
+      if (!this.pickups.board.available(i, now)) continue;
+      const mesh = this.pickups.meshes[i];
+      if (horizDist(this.currPos, mesh.position) < PICKUP_RADIUS) {
+        if (this.pickups.board.take(i, now)) {
+          this.cb.sendPickup(i);
+          this.charges = Math.min(this.charges + 1, TURBO_MAX_CHARGES);
+          this.audio.turboWhoosh(0.5);
+          this.hud.setTurbo(this.charges, this.turboActive);
+        }
+      }
+    }
+
+    if (this.input.turboPressed && this.charges > 0) {
+      this.charges--;
+      this.turboUntil = now + TURBO_DURATION_MS;
+      this.audio.turboWhoosh();
+      this.hud.setTurbo(this.charges, this.turboActive);
+    }
+
+    OWN_FWD_SCRATCH.set(0, 0, -1).applyQuaternion(this.currQuat);
+    OWN_FWD_SCRATCH.y = 0;
+    OWN_FWD_SCRATCH.normalize();
+    const lv = this.myBody.linvel();
+    const speed = Math.hypot(lv.x, lv.z);
+    const remotePositions: THREE.Vector3[] = [];
+    for (const r of this.remotes.values()) remotePositions.push(r.mesh.position);
+    const target = slipstreamTarget(this.currPos, OWN_FWD_SCRATCH, speed, remotePositions);
+    this.slipBonus += (target - this.slipBonus) * Math.min(1, SLIP_LERP * FIXED_DT);
   }
 
   /** Wheel spin/steer, body tilt, and drift-smoke/turbo-flame emission for the local car. */
@@ -404,11 +467,13 @@ export class Game {
     this.sendTimer += dt;
     if (this.sendTimer < 1 / STATE_HZ) return;
     this.sendTimer = 0;
-    this.cb.sendState({
+    const state: CarState = {
       p: this.renderPos.toArray() as [number, number, number],
       q: this.renderQuat.toArray() as [number, number, number, number],
       progress: this.myProgress(),
-    });
+    };
+    if (this.turboActive) state.b = true; // omit when false to keep payloads lean
+    this.cb.sendState(state);
   }
 
   private loop = (now: number): void => {
@@ -440,6 +505,7 @@ export class Game {
       }
     }
     this.effects.update(dt);
+    this.pickups.update(now, dt);
 
     const lv = this.myBody.linvel();
     const speed = Math.hypot(lv.x, lv.z);
@@ -449,8 +515,8 @@ export class Game {
       { x: this.renderPos.x, z: this.renderPos.z },
       [...this.remotes.values()].map((r) => ({ x: r.mesh.position.x, z: r.mesh.position.z })),
     );
-    this.chase.update(this.renderPos, this.renderQuat, speed, dt, false); // Task 4 sets real turbo flag
-    this.audio.engine(speed / MAX_SPEED, false); // Task 4: turbo
+    this.chase.update(this.renderPos, this.renderQuat, speed, dt, this.turboActive);
+    this.audio.engine(speed / MAX_SPEED, this.turboActive);
     this.audio.crowd(0); // Task 5: real proximity via setCrowdSources + nearest-stand distance
     if (this.phase === 'racing') this.netSend(dt);
     this.ctx.renderer.render(this.ctx.scene, this.ctx.camera);

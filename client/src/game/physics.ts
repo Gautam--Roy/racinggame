@@ -67,8 +67,16 @@ const VEL = new THREE.Vector3();
 const LAT = new THREE.Vector3();
 const Q = new THREE.Quaternion();
 
+/** Optional dynamic modifiers layered on top of the base arcade tuning (turbo boost, slipstream draft). */
+export interface DriveOpts {
+  turbo: boolean;
+  slipBonus: number;
+}
+
+const DEFAULT_DRIVE_OPTS: DriveOpts = { turbo: false, slipBonus: 0 };
+
 /** Arcade controller: read velocity, apply engine/brake/grip, write back. Collisions still shove the car because Rapier's solver adjusts velocity during the step and we re-read it next step. */
-export function driveCar(body: RAPIER.RigidBody, input: Input, dt: number): void {
+export function driveCar(body: RAPIER.RigidBody, input: Input, dt: number, opts: DriveOpts = DEFAULT_DRIVE_OPTS): void {
   const r = body.rotation();
   Q.set(r.x, r.y, r.z, r.w);
   FWD.set(0, 0, -1).applyQuaternion(Q);
@@ -78,8 +86,11 @@ export function driveCar(body: RAPIER.RigidBody, input: Input, dt: number): void
   VEL.set(lv.x, 0, lv.z);
   const fwdSpeed = VEL.dot(FWD);
 
+  const maxSpeed = MAX_SPEED * (opts.turbo ? 1.4 : 1 + opts.slipBonus);
+  const engineAccel = ENGINE_ACCEL * (opts.turbo ? 1.6 : 1 + opts.slipBonus);
+
   let accel = 0;
-  if (input.throttle > 0) accel = ENGINE_ACCEL * input.throttle * Math.max(0, 1 - Math.max(0, fwdSpeed) / MAX_SPEED);
+  if (input.throttle > 0) accel = engineAccel * input.throttle * Math.max(0, 1 - Math.max(0, fwdSpeed) / maxSpeed);
   else if (input.throttle < 0) accel = fwdSpeed > 0.5 ? -BRAKE_ACCEL : fwdSpeed > -MAX_REVERSE ? -REVERSE_ACCEL : 0;
   VEL.addScaledVector(FWD, accel * dt);
 

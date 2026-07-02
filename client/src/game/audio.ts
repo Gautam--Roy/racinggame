@@ -209,7 +209,8 @@ export class AudioManager {
     source.stop(t + dur);
   }
 
-  turboWhoosh(): void {
+  /** gain scales the peak amplitude (0.3 base); pass a lower value for the pickup-collect variant. */
+  turboWhoosh(gain = 1): void {
     if (!this.ctx || !this.master) return;
     const ctx = this.ctx;
     const t = ctx.currentTime;
@@ -225,13 +226,13 @@ export class AudioManager {
     filter.frequency.setValueAtTime(300, t);
     filter.frequency.exponentialRampToValueAtTime(3000, t + dur);
 
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.3, t);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    const gainNode = ctx.createGain();
+    gainNode.gain.setValueAtTime(0.3 * clamp01(gain), t);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, t + dur);
 
     source.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.master);
+    filter.connect(gainNode);
+    gainNode.connect(this.master);
     source.start(t);
     source.stop(t + dur);
   }
