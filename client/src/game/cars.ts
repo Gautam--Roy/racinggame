@@ -13,7 +13,7 @@ export const ACCENT: Record<CarModel, number> = {
   suv: 0xd8b02a,
   'hatchback-sports': 0x8a2ad8,
   police: 0x2a4ad8,
-  taxi: 0xd8b02a,
+  taxi: 0xffc400,
   ambulance: 0xd84a4a,
 };
 
