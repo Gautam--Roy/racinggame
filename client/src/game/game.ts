@@ -11,12 +11,51 @@ import { CAR_HALF, createLocalCar, createRemoteCar, createWorld, driveCar, freez
 import { CheckpointTracker } from './raceLogic';
 import { createScene, SceneCtx } from './scene';
 import { buildTrack, curve, gridPose, ROAD_WIDTH, TrackData } from './track';
+import { findTiltTarget, findWheels, Wheels } from './cars';
+import { ParticleSystem } from './effects';
 
 const FIXED_DT = 1 / 60;
 const INTERP_DELAY_MS = 120;
 const CP_RADIUS = ROAD_WIDTH * 0.75;
 const COLLISION_DROP_THRESHOLD = 6; // m/s
 const COLLISION_DROP_RANGE = 12; // m/s, maps drop above threshold to intensity 0..1
+const WHEEL_RADIUS = 0.34; // m, approx across all car models
+const STEER_WHEEL_MAX = 0.45; // rad, front wheel yaw at full steer
+const TILT_LERP = 8; // 1/s
+const TILT_ROLL_MAX = 0.09; // rad
+const TILT_PITCH_MAX = 0.06; // rad
+
+/** Per-car visual animation state: wheel spin/steer, body tilt, smoothed accel estimates. */
+interface CarAnim {
+  wheels: Wheels;
+  tilt: THREE.Object3D | undefined;
+  fwdSpeed: number; // smoothed signed forward speed estimate (m/s), used for wheel spin + remotes
+  prevHorizVel: THREE.Vector3; // own: from body; remotes: estimated from position deltas
+  roll: number;
+  pitch: number;
+}
+
+function createCarAnim(mesh: THREE.Group): CarAnim {
+  return {
+    wheels: findWheels(mesh),
+    tilt: findTiltTarget(mesh),
+    fwdSpeed: 0,
+    prevHorizVel: new THREE.Vector3(),
+    roll: 0,
+    pitch: 0,
+  };
+}
+
+// Scratch objects reused across frames to avoid hot-path allocation.
+const FWD_SCRATCH = new THREE.Vector3();
+const LAT_SCRATCH = new THREE.Vector3();
+const VEL_SCRATCH = new THREE.Vector3();
+const SMOKE_POS = new THREE.Vector3();
+const SMOKE_VEL = new THREE.Vector3();
+const FLAME_POS = new THREE.Vector3();
+const FLAME_VEL = new THREE.Vector3();
+const REMOTE_DELTA = new THREE.Vector3();
+const REMOTE_FWD = new THREE.Vector3();
 
 export interface GameCallbacks {
   sendState: (state: CarState) => void;
@@ -29,6 +68,9 @@ interface RemoteCar {
   body: RAPIER.RigidBody;
   buffer: SnapshotBuffer;
   progress: Progress;
+  anim: CarAnim;
+  turboActive: boolean;
+  prevPos: THREE.Vector3;
 }
 
 export class Game {
@@ -61,6 +103,10 @@ export class Game {
   private currQuat = new THREE.Quaternion();
   private renderPos = new THREE.Vector3();
   private renderQuat = new THREE.Quaternion();
+  private myAnim!: CarAnim;
+  readonly effects = new ParticleSystem();
+  /** Task 4 sets this when a turbo pickup boost is active. */
+  private turboActive = false;
 
   private constructor(
     private readonly selfId: string,
@@ -90,12 +136,16 @@ export class Game {
     }
     game.hud.initMinimap(mapPts);
     game.hud.onMuteClick = () => game.hud.setMuted(game.audio.toggleMuted());
+    game.ctx.scene.add(game.effects.points);
+    // debug hook: active particle count, used by browser verification (see Task 3 plan notes)
+    (window as any).__fxCount = () => game.effects.activeCount;
 
     for (const p of players) {
       const mesh = await instantiateCar(p.car);
       const { pos, yaw } = gridPose(grid[p.id] ?? 0);
       if (p.id === selfId) {
         game.myMesh = mesh;
+        game.myAnim = createCarAnim(mesh);
         game.myBody = createLocalCar(game.world, pos, yaw);
         game.syncFromBody();
         game.prevPos.copy(game.currPos);
@@ -106,7 +156,15 @@ export class Game {
         body.setNextKinematicTranslation({ x: pos.x, y: CAR_HALF.y, z: pos.z });
         mesh.position.copy(pos);
         mesh.rotation.y = yaw;
-        game.remotes.set(p.id, { mesh, body, buffer: new SnapshotBuffer(), progress: { passed: 0, dist: 0 } });
+        game.remotes.set(p.id, {
+          mesh,
+          body,
+          buffer: new SnapshotBuffer(),
+          progress: { passed: 0, dist: 0 },
+          anim: createCarAnim(mesh),
+          turboActive: false,
+          prevPos: pos.clone(),
+        });
       }
       game.ctx.scene.add(mesh);
     }
@@ -147,6 +205,7 @@ export class Game {
     if (!r) return;
     r.buffer.push({ t: performance.now(), p: state.p, q: state.q });
     r.progress = state.progress;
+    r.turboActive = !!state.b;
   }
 
   onPlayerLeft(id: string): void {
@@ -210,7 +269,74 @@ export class Game {
     }
     this.prevHorizSpeed = horizSpeed;
 
+    this.animateOwnCar(FIXED_DT);
+    this.effects.update(FIXED_DT);
+
     this.updateRaceLogic(); // Task 13
+  }
+
+  /** Wheel spin/steer, body tilt, and drift-smoke/turbo-flame emission for the local car. */
+  private animateOwnCar(dt: number): void {
+    const lv = this.myBody.linvel();
+    const fwd = FWD_SCRATCH.set(0, 0, -1).applyQuaternion(this.currQuat);
+    fwd.y = 0;
+    fwd.normalize();
+    const fwdSpeed = lv.x * fwd.x + lv.z * fwd.z;
+    const horizSpeed = Math.hypot(lv.x, lv.z);
+
+    const anim = this.myAnim;
+    const { wheels, tilt } = anim;
+    const spinDelta = (fwdSpeed / WHEEL_RADIUS) * dt;
+    if (wheels.fl) wheels.fl.rotation.x += spinDelta;
+    if (wheels.fr) wheels.fr.rotation.x += spinDelta;
+    if (wheels.bl) wheels.bl.rotation.x += spinDelta;
+    if (wheels.br) wheels.br.rotation.x += spinDelta;
+    const steerY = this.input.steer * STEER_WHEEL_MAX;
+    if (wheels.fl) wheels.fl.rotation.y = steerY;
+    if (wheels.fr) wheels.fr.rotation.y = steerY;
+    (window as any).__wheelRot = wheels.fl ? wheels.fl.rotation.x : 0; // debug hook: own front-left wheel spin
+
+    // body tilt from lateral/longitudinal acceleration
+    const lateral = LAT_SCRATCH.set(lv.x - anim.prevHorizVel.x, 0, lv.z - anim.prevHorizVel.z);
+    const lateralAccel = (lateral.x * -fwd.z + lateral.z * fwd.x) / dt; // component perpendicular to fwd
+    const longAccel = (fwdSpeed - anim.fwdSpeed) / dt;
+    anim.fwdSpeed = fwdSpeed;
+    anim.prevHorizVel.set(lv.x, 0, lv.z);
+    const targetRoll = THREE.MathUtils.clamp(-lateralAccel * 0.02, -TILT_ROLL_MAX, TILT_ROLL_MAX);
+    const targetPitch = THREE.MathUtils.clamp(longAccel * 0.012, -TILT_PITCH_MAX, TILT_PITCH_MAX);
+    const tiltAlpha = Math.min(1, TILT_LERP * dt);
+    anim.roll += (targetRoll - anim.roll) * tiltAlpha;
+    anim.pitch += (targetPitch - anim.pitch) * tiltAlpha;
+    if (tilt) {
+      tilt.rotation.z = anim.roll;
+      tilt.rotation.x = anim.pitch;
+    }
+
+    // drift smoke: own car, handbrake + moving reasonably fast
+    if (this.input.handbrake && horizSpeed > 8) {
+      for (const w of [wheels.bl, wheels.br]) {
+        if (!w) continue;
+        w.getWorldPosition(SMOKE_POS);
+        SMOKE_VEL.set((Math.random() - 0.5) * 0.6, 1.2 + Math.random() * 0.6, (Math.random() - 0.5) * 0.6);
+        SMOKE_VEL.addScaledVector(VEL_SCRATCH.set(lv.x, 0, lv.z), 0.3);
+        this.effects.spawn(SMOKE_POS, SMOKE_VEL, 0.7, 0.9, 0x888888);
+      }
+    }
+
+    // turbo flames: own car
+    if (this.turboActive) this.emitTurboFlames(this.currPos, fwd);
+  }
+
+  private emitTurboFlames(pos: THREE.Vector3, fwd: THREE.Vector3): void {
+    for (let i = 0; i < 6; i++) {
+      FLAME_POS.copy(pos).addScaledVector(fwd, -CAR_HALF.z);
+      FLAME_POS.x += (Math.random() - 0.5) * 0.4;
+      FLAME_POS.y += (Math.random() - 0.5) * 0.2;
+      FLAME_VEL.copy(fwd).multiplyScalar(-(4 + Math.random() * 3));
+      FLAME_VEL.y += Math.random() * 1.5;
+      const color = Math.random() < 0.5 ? 0xff7722 : 0xffcc44;
+      this.effects.spawn(FLAME_POS, FLAME_VEL, 0.25, 0.6, color);
+    }
   }
 
   private updateRaceLogic(): void {
@@ -302,9 +428,11 @@ export class Game {
       if (r.buffer.sample(sampleT, r.mesh.position, r.mesh.quaternion)) {
         r.body.setNextKinematicTranslation({ x: r.mesh.position.x, y: r.mesh.position.y, z: r.mesh.position.z });
         r.body.setNextKinematicRotation(r.mesh.quaternion);
+        this.animateRemoteCar(r, dt);
         r.mesh.position.y -= CAR_HALF.y;
       }
     }
+    this.effects.update(dt);
 
     const lv = this.myBody.linvel();
     const speed = Math.hypot(lv.x, lv.z);
@@ -314,12 +442,42 @@ export class Game {
       { x: this.renderPos.x, z: this.renderPos.z },
       [...this.remotes.values()].map((r) => ({ x: r.mesh.position.x, z: r.mesh.position.z })),
     );
-    this.chase.update(this.renderPos, this.renderQuat, speed, dt);
+    this.chase.update(this.renderPos, this.renderQuat, speed, dt, false); // Task 4 sets real turbo flag
     this.audio.engine(speed / MAX_SPEED, false); // Task 4: turbo
     this.audio.crowd(0); // Task 5: real proximity via setCrowdSources + nearest-stand distance
     if (this.phase === 'racing') this.netSend(dt);
     this.ctx.renderer.render(this.ctx.scene, this.ctx.camera);
   };
+
+  /** Wheel spin/steer estimate + turbo flames for a remote car, driven by interpolated position deltas. */
+  private animateRemoteCar(r: RemoteCar, dt: number): void {
+    if (dt <= 0) return;
+    REMOTE_DELTA.set(r.mesh.position.x - r.prevPos.x, 0, r.mesh.position.z - r.prevPos.z);
+    r.prevPos.copy(r.mesh.position);
+    REMOTE_FWD.set(0, 0, -1).applyQuaternion(r.mesh.quaternion);
+    REMOTE_FWD.y = 0;
+    REMOTE_FWD.normalize();
+    const rawSpeed = REMOTE_DELTA.length() / dt;
+    const signed = (REMOTE_DELTA.x * REMOTE_FWD.x + REMOTE_DELTA.z * REMOTE_FWD.z) / dt >= 0 ? rawSpeed : -rawSpeed;
+    r.anim.fwdSpeed += (signed - r.anim.fwdSpeed) * 0.2;
+
+    const { wheels, tilt } = r.anim;
+    const spinDelta = (r.anim.fwdSpeed / WHEEL_RADIUS) * dt;
+    if (wheels.fl) wheels.fl.rotation.x += spinDelta;
+    if (wheels.fr) wheels.fr.rotation.x += spinDelta;
+    if (wheels.bl) wheels.bl.rotation.x += spinDelta;
+    if (wheels.br) wheels.br.rotation.x += spinDelta;
+    // remotes: no steer signal available over the wire, front wheels stay centered
+
+    // body tilt: heavily smoothed, half amplitude, driven off the same speed-delta signal
+    const targetPitch = THREE.MathUtils.clamp((r.anim.fwdSpeed - r.anim.prevHorizVel.x) * 0.006, -TILT_PITCH_MAX / 2, TILT_PITCH_MAX / 2);
+    r.anim.prevHorizVel.x = r.anim.fwdSpeed;
+    const alpha = Math.min(1, (TILT_LERP / 2) * dt);
+    r.anim.pitch += (targetPitch - r.anim.pitch) * alpha;
+    if (tilt) tilt.rotation.x = r.anim.pitch;
+
+    if (r.turboActive) this.emitTurboFlames(r.mesh.position, REMOTE_FWD);
+  }
 }
 
 function horizDist(a: THREE.Vector3, b: THREE.Vector3): number {
