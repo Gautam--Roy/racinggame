@@ -1,4 +1,5 @@
 import { CAR_MODELS, CarModel, PlayerInfo, Standing } from '../../../shared/src/protocol';
+import { ACCENT, CAR_DISPLAY } from '../game/cars';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -33,14 +34,18 @@ export class Screens {
   renderLobby(code: string, players: PlayerInfo[], selfId: string): void {
     $('lobby-code').textContent = code;
     $('player-list').innerHTML = players
-      .map((p) => `<li>${p.isHost ? '👑 ' : ''}${esc(p.name)} — ${p.car}${p.id === selfId ? ' (you)' : ''}</li>`)
+      .map(
+        (p) =>
+          `<li>${p.isHost ? '👑 ' : ''}${esc(p.name)} — ${CAR_DISPLAY[p.car]}${p.id === selfId ? ' (you)' : ''}</li>`,
+      )
       .join('');
     const me = players.find((p) => p.id === selfId);
     const picker = $('car-picker');
     picker.innerHTML = '';
     for (const car of CAR_MODELS) {
       const btn = document.createElement('button');
-      btn.textContent = car;
+      const hex = ACCENT[car].toString(16).padStart(6, '0');
+      btn.innerHTML = `<span class="swatch" style="background: #${hex}"></span>${CAR_DISPLAY[car]}`;
       const owner = players.find((p) => p.car === car);
       if (owner?.id === selfId) btn.classList.add('mine');
       else if (owner) btn.classList.add('taken');

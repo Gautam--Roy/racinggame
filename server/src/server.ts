@@ -1,5 +1,5 @@
 import { WebSocket, WebSocketServer } from 'ws';
-import { ClientMsg, ServerMsg } from '../../shared/src/protocol';
+import { ClientMsg, PICKUP_COUNT, ServerMsg } from '../../shared/src/protocol';
 import { LobbyManager, Room } from './lobby';
 
 const RESULTS_TIMEOUT_MS = 60_000;
@@ -11,8 +11,11 @@ interface Conn {
   room: Room | null;
 }
 
-export function createGameServer(port: number): WebSocketServer {
-  const wss = new WebSocketServer({ port });
+export type CreateGameServerOpts = { port: number } | { server: import('http').Server };
+
+export function createGameServer(opts: number | CreateGameServerOpts): WebSocketServer {
+  const resolved: CreateGameServerOpts = typeof opts === 'number' ? { port: opts } : opts;
+  const wss = new WebSocketServer('server' in resolved ? { server: resolved.server } : { port: resolved.port });
   const lobby = new LobbyManager();
   const conns = new Map<string, Conn>();
   const roomTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -76,6 +79,15 @@ export function createGameServer(port: number): WebSocketServer {
           conn.room.recordFinish(conn.id, msg.timeMs);
           maybeEndRace(conn.room);
         }
+        break;
+      }
+      case 'horn': {
+        if (conn.room?.phase === 'racing') broadcast(conn.room, { type: 'horn', id: conn.id }, conn.id);
+        break;
+      }
+      case 'pickup': {
+        if (conn.room?.phase === 'racing' && Number.isInteger(msg.idx) && msg.idx >= 0 && msg.idx < PICKUP_COUNT)
+          broadcast(conn.room, { type: 'pickup', idx: msg.idx, id: conn.id }, conn.id);
         break;
       }
     }

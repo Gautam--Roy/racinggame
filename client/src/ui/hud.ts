@@ -13,6 +13,14 @@ export class Hud {
   private mapScale = 1;
   private mapOff = { x: 0, y: 0 };
   private mapPath = new Path2D();
+  private boundMuteClick = () => this.onMuteClick?.();
+
+  /** Set by game.ts; fired when the mute button is clicked. */
+  onMuteClick: (() => void) | null = null;
+
+  constructor() {
+    $('mute-btn').addEventListener('click', this.boundMuteClick);
+  }
 
   show(): void {
     $('hud').classList.remove('hidden');
@@ -104,5 +112,21 @@ export class Hud {
 
   setWaiting(on: boolean): void {
     $('waiting').classList.toggle('hidden', !on);
+  }
+
+  setMuted(m: boolean): void {
+    $('mute-btn').textContent = m ? '🔇' : '🔊';
+  }
+
+  setTurbo(charges: number, active: boolean): void {
+    const el = $('turbo');
+    el.textContent = charges > 0 || active ? `⚡×${charges}` : '';
+    el.classList.toggle('boosting', active);
+  }
+
+  /** Remove the mute-button listener so repeated Game/Hud construction across races doesn't accumulate listeners. */
+  dispose(): void {
+    $('mute-btn').removeEventListener('click', this.boundMuteClick);
+    this.onMuteClick = null;
   }
 }

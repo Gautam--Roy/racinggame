@@ -1,8 +1,18 @@
 export const MAX_PLAYERS = 4;
 export const TOTAL_LAPS = 3;
 export const STATE_HZ = 20;
+export const PICKUP_COUNT = 5;
 
-export const CAR_MODELS = ['race', 'race-future', 'sedan-sports', 'suv'] as const;
+export const CAR_MODELS = [
+  'race',
+  'race-future',
+  'sedan-sports',
+  'suv',
+  'hatchback-sports',
+  'police',
+  'taxi',
+  'ambulance',
+] as const;
 export type CarModel = (typeof CAR_MODELS)[number];
 
 export interface PlayerInfo {
@@ -27,6 +37,7 @@ export interface CarState {
   p: [number, number, number];
   q: [number, number, number, number];
   progress: Progress;
+  b?: boolean; // turbo boost active
 }
 
 export interface Standing {
@@ -41,7 +52,9 @@ export type ClientMsg =
   | { type: 'pickCar'; car: CarModel }
   | { type: 'start' }
   | { type: 'state'; state: CarState }
-  | { type: 'finished'; timeMs: number };
+  | { type: 'finished'; timeMs: number }
+  | { type: 'horn' }
+  | { type: 'pickup'; idx: number };
 
 export type ServerMsg =
   | { type: 'created'; code: string; selfId: string; players: PlayerInfo[] }
@@ -51,4 +64,6 @@ export type ServerMsg =
   | { type: 'countdown'; countdownMs: number; grid: Record<string, number> }
   | { type: 'state'; id: string; state: CarState }
   | { type: 'playerLeft'; id: string }
-  | { type: 'results'; standings: Standing[] };
+  | { type: 'results'; standings: Standing[] }
+  | { type: 'horn'; id: string }
+  | { type: 'pickup'; idx: number; id: string };

@@ -21,7 +21,7 @@ code. Share it; up to 3 friends **Join** with the code (same machine in another
 tab, your LAN, or a deployed URL). The host presses **Start Race**. First to
 complete 3 laps wins; the results screen shows final standings.
 
-- **Drive:** `W`/`A`/`S`/`D` or arrow keys · **Handbrake:** `Space`
+- **Drive:** `W`/`A`/`S`/`D` or arrow keys · **Handbrake:** `Space` · **Turbo:** `Shift` (grab the glowing pickups) · **Horn:** `H` · **Mute:** `M`
 - **Practice solo:** http://localhost:5173/?practice
 
 The HUD shows speed, lap, live position, current lap time, total race time, and
@@ -50,6 +50,46 @@ npm run e2e      # self-contained: boots a server + 4 headless bots through
 
 Architecture and design rationale: `docs/superpowers/specs/2026-06-12-multiplayer-racing-game-design.md`.
 Implementation plan: `docs/superpowers/plans/2026-06-12-racing-game.md`.
+
+## Deploy
+
+The server can serve the built client itself (single container, no separate
+static host needed). `server/src/index.ts` picks static-serving mode when
+`STATIC_DIR` is set (or `client/dist` exists); otherwise it falls back to the
+plain WebSocket-only relay used in development.
+
+### Docker Compose behind an existing Traefik
+
+```bash
+cp .env.example .env    # set RACING_DOMAIN (and any Traefik overrides)
+docker compose up -d --build
+```
+
+`docker-compose.yml` publishes no host ports — it joins the external
+`traefik` network and lets Traefik route to it via labels.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RACING_DOMAIN` | *(required)* | Hostname Traefik routes to this service |
+| `TRAEFIK_ENTRYPOINT` | `websecure` | Traefik entrypoint name |
+| `CERT_RESOLVER` | `letsencrypt` | Traefik ACME cert resolver name |
+| `TRAEFIK_NETWORK` | `traefik` | External Docker network Traefik listens on |
+
+### Local container test (no Traefik)
+
+```bash
+docker build -t racinggame .
+docker run --rm -p 8080:8080 racinggame
+```
+
+Open http://localhost:8080.
+
+### Plain Node production (no Docker)
+
+```bash
+npm run build                                    # vite build + esbuild server bundle
+STATIC_DIR=client/dist PORT=8080 node server-dist/index.mjs
+```
 
 ## Credits
 

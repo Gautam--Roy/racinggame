@@ -25,18 +25,44 @@ html, body { height: 100%; overflow: hidden; background: #0b0e14; font-family: s
 
 #player-list { list-style: none; font-size: 20px; text-align: center; }
 #player-list li { padding: 4px 0; }
-#car-picker { display: flex; gap: 10px; }
-#car-picker button { background: #28304a; font-size: 14px; padding: 8px 14px; }
+#car-picker {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; max-width: 560px;
+}
+#car-picker button {
+  display: flex; align-items: center; gap: 6px; justify-content: center;
+  background: #28304a; font-size: 14px; padding: 8px 14px;
+}
 #car-picker button.mine { outline: 2px solid #e8463c; }
 #car-picker button.taken { opacity: 0.35; }
+.swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+#controls-hint { font-size: 13px; opacity: 0.55; }
 
 #hud { position: fixed; inset: 0; pointer-events: none; color: #fff; z-index: 5; }
 #hud > div { position: absolute; text-shadow: 0 2px 6px rgba(0,0,0,0.7); }
 #speed { right: 28px; bottom: 24px; font-size: 42px; font-weight: 800; font-style: italic; }
 #lap { left: 28px; top: 20px; font-size: 26px; font-weight: 700; }
 #pos { left: 28px; top: 54px; font-size: 26px; font-weight: 700; color: #ffd24d; }
+#mute-btn {
+  position: absolute; left: 28px; top: 96px; pointer-events: auto;
+  font-size: 20px; padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(10, 13, 20, 0.55); color: #fff; cursor: pointer; line-height: 1;
+}
+#mute-btn:hover { background: rgba(10, 13, 20, 0.75); }
 #laptime { right: 28px; bottom: 84px; font-size: 20px; font-weight: 600; }
 #totaltime { right: 28px; bottom: 112px; font-size: 20px; font-weight: 600; color: #ffd24d; }
+#turbo {
+  right: 28px; bottom: 140px; font-size: 22px; font-weight: 800; color: #22ddee;
+  transition: color 0.15s, text-shadow 0.15s;
+}
+#turbo.boosting {
+  color: #ffb02a;
+  text-shadow: 0 0 10px rgba(255, 176, 42, 0.9), 0 2px 6px rgba(0,0,0,0.7);
+  animation: turbo-pulse 0.4s ease-in-out infinite;
+}
+@keyframes turbo-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
 #minimap { position: absolute; right: 20px; top: 20px; width: 170px; height: 170px; }
 #countdown { left: 50%; top: 38%; transform: translate(-50%, -50%); font-size: 110px; font-weight: 900; }
 #wrongway { left: 50%; top: 18%; transform: translateX(-50%); font-size: 34px; color: #ff5544; font-weight: 900; }

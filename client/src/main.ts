@@ -35,7 +35,7 @@ function onMessage(msg: ServerMsg): void {
       players = msg.players;
       screens.renderLobby(roomCode, players, selfId);
       screens.show('lobby');
-      preloadCars().catch(() => {}); // warm all 4 models during lobby; missing models fall back per-car
+      preloadCars().catch(() => {}); // warm all car models during lobby; missing models fall back per-car
       break;
     case 'lobby':
       players = msg.players;
@@ -51,6 +51,8 @@ function onMessage(msg: ServerMsg): void {
       Game.create(canvas, selfId, racers, msg.grid, {
         sendState: (state) => socket?.send({ type: 'state', state }),
         sendFinished: (timeMs) => socket?.send({ type: 'finished', timeMs }),
+        sendHorn: () => socket?.send({ type: 'horn' }),
+        sendPickup: (idx) => socket?.send({ type: 'pickup', idx }),
       }).then((g) => {
         game = g;
         g.start(msg.countdownMs);
@@ -59,6 +61,12 @@ function onMessage(msg: ServerMsg): void {
     }
     case 'state':
       game?.onRemoteState(msg.id, msg.state);
+      break;
+    case 'horn':
+      game?.onHorn(msg.id);
+      break;
+    case 'pickup':
+      game?.onPickup(msg.idx, msg.id);
       break;
     case 'playerLeft':
       game?.onPlayerLeft(msg.id);
@@ -91,7 +99,12 @@ if (location.search.includes('practice')) {
   screens.show('none');
   preloadCars(['race'])
     .then(() =>
-      Game.create(canvas, 'solo', [me], { solo: 0 }, { sendState: () => {}, sendFinished: () => {} }),
+      Game.create(canvas, 'solo', [me], { solo: 0 }, {
+        sendState: () => {},
+        sendFinished: () => {},
+        sendHorn: () => {},
+        sendPickup: () => {},
+      }),
     )
     .then((g) => {
       game = g;
@@ -100,3 +113,14 @@ if (location.search.includes('practice')) {
 } else {
   screens.show('menu');
 }
+
+// Autoplay policies require a user gesture before an AudioContext can start (or
+// resume). These listeners are permanent (never removed): unlock() is idempotent
+// and cheap, and a fresh gesture is needed for every race/rematch since `game` is
+// reassigned each time a new Game is constructed.
+function unlockAudio(): void {
+  game?.audio.unlock();
+}
+document.addEventListener('click', unlockAudio);
+document.addEventListener('keydown', unlockAudio);
+document.addEventListener('pointerdown', unlockAudio);

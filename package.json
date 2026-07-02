@@ -11,7 +11,9 @@
     "dev": "vite",
     "server": "tsx server/src/index.ts",
     "bots": "tsx scripts/bots.ts",
-    "e2e": "tsx scripts/e2e.ts"
+    "e2e": "tsx scripts/e2e.ts",
+    "build": "vite build && esbuild server/src/index.ts --bundle --platform=node --format=esm --outfile=server-dist/index.mjs --external:bufferutil --external:utf-8-validate --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
+    "start": "node server-dist/index.mjs"
   },
   "repository": {
     "type": "git",
@@ -34,6 +36,7 @@
   "devDependencies": {
     "@types/three": "^0.184.1",
     "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.1",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",

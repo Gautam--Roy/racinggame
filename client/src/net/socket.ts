@@ -6,7 +6,15 @@ export class GameSocket {
   constructor(
     private readonly onMessage: (msg: ServerMsg) => void,
     private readonly onClose: () => void = () => {},
-    url = `ws://${location.hostname}:8080`,
+    // Port 5173 is the Vite dev-server default; in dev the client and the
+    // game relay run on different ports, so we hardcode the relay's port.
+    // This heuristic only covers `vite dev` — `vite preview` runs on a
+    // different port and isn't detected here. Production builds are served
+    // same-origin (client and relay share a host/port), so the ws(s) branch
+    // below is used instead and no heuristic is needed.
+    url = location.port === '5173'
+      ? `ws://${location.hostname}:8080`
+      : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`,
   ) {
     this.ws = new WebSocket(url);
     this.ws.addEventListener('message', (e) => {
