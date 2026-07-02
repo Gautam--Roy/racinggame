@@ -25,7 +25,7 @@ export class ChaseCamera {
 
     // render-only shake, scales with speed ratio squared; not part of deterministic physics
     const ratio = THREE.MathUtils.clamp(speed / MAX_SPEED, 0, 1);
-    const amount = 0.1 * ratio * ratio * (turbo ? 1.5 : 1);
+    const amount = 0.05 * ratio * ratio * (turbo ? 1.5 : 1);
     shake.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(amount);
     this.cam.position.add(shake);
   }

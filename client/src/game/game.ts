@@ -30,17 +30,26 @@ interface CarAnim {
   wheels: Wheels;
   tilt: THREE.Object3D | undefined;
   fwdSpeed: number; // smoothed signed forward speed estimate (m/s), used for wheel spin + remotes
-  prevHorizVel: THREE.Vector3; // own: from body; remotes: estimated from position deltas
+  prevHorizVel: THREE.Vector3; // own car only: full (x,z) velocity from the physics body
+  prevSpeedEstimate: number; // remote cars only: previous smoothed fwdSpeed, for tilt-from-delta
   roll: number;
   pitch: number;
 }
 
+const warnedNoWheels = new WeakSet<THREE.Group>();
+
 function createCarAnim(mesh: THREE.Group): CarAnim {
+  const wheels = findWheels(mesh);
+  if (!wheels.fl && !wheels.fr && !wheels.bl && !wheels.br && !warnedNoWheels.has(mesh)) {
+    warnedNoWheels.add(mesh);
+    console.warn('car model has no named wheel nodes — wheels will not animate');
+  }
   return {
-    wheels: findWheels(mesh),
+    wheels,
     tilt: findTiltTarget(mesh),
     fwdSpeed: 0,
     prevHorizVel: new THREE.Vector3(),
+    prevSpeedEstimate: 0,
     roll: 0,
     pitch: 0,
   };
@@ -137,8 +146,6 @@ export class Game {
     game.hud.initMinimap(mapPts);
     game.hud.onMuteClick = () => game.hud.setMuted(game.audio.toggleMuted());
     game.ctx.scene.add(game.effects.points);
-    // debug hook: active particle count, used by browser verification (see Task 3 plan notes)
-    (window as any).__fxCount = () => game.effects.activeCount;
 
     for (const p of players) {
       const mesh = await instantiateCar(p.car);
@@ -225,6 +232,8 @@ export class Game {
     this.hud.hide();
     this.hud.dispose();
     this.audio.dispose();
+    this.ctx.scene.remove(this.effects.points);
+    this.effects.dispose();
     this.ctx.dispose();
   }
 
@@ -270,7 +279,6 @@ export class Game {
     this.prevHorizSpeed = horizSpeed;
 
     this.animateOwnCar(FIXED_DT);
-    this.effects.update(FIXED_DT);
 
     this.updateRaceLogic(); // Task 13
   }
@@ -294,7 +302,6 @@ export class Game {
     const steerY = this.input.steer * STEER_WHEEL_MAX;
     if (wheels.fl) wheels.fl.rotation.y = steerY;
     if (wheels.fr) wheels.fr.rotation.y = steerY;
-    (window as any).__wheelRot = wheels.fl ? wheels.fl.rotation.x : 0; // debug hook: own front-left wheel spin
 
     // body tilt from lateral/longitudinal acceleration
     const lateral = LAT_SCRATCH.set(lv.x - anim.prevHorizVel.x, 0, lv.z - anim.prevHorizVel.z);
@@ -470,8 +477,8 @@ export class Game {
     // remotes: no steer signal available over the wire, front wheels stay centered
 
     // body tilt: heavily smoothed, half amplitude, driven off the same speed-delta signal
-    const targetPitch = THREE.MathUtils.clamp((r.anim.fwdSpeed - r.anim.prevHorizVel.x) * 0.006, -TILT_PITCH_MAX / 2, TILT_PITCH_MAX / 2);
-    r.anim.prevHorizVel.x = r.anim.fwdSpeed;
+    const targetPitch = THREE.MathUtils.clamp((r.anim.fwdSpeed - r.anim.prevSpeedEstimate) * 0.006, -TILT_PITCH_MAX / 2, TILT_PITCH_MAX / 2);
+    r.anim.prevSpeedEstimate = r.anim.fwdSpeed;
     const alpha = Math.min(1, (TILT_LERP / 2) * dt);
     r.anim.pitch += (targetPitch - r.anim.pitch) * alpha;
     if (tilt) tilt.rotation.x = r.anim.pitch;

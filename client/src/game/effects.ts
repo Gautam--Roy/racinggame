@@ -108,6 +108,11 @@ export class ParticleSystem {
     this.geometry.attributes.color.needsUpdate = true;
     this.geometry.attributes.size.needsUpdate = true;
   }
+
+  dispose(): void {
+    this.geometry.dispose();
+    (this.points.material as THREE.Material).dispose();
+  }
 }
 
 const TMP_COLOR = new THREE.Color();
