@@ -164,6 +164,7 @@ export class Game {
     cancelAnimationFrame(this.raf);
     this.input.dispose();
     this.hud.hide();
+    this.hud.dispose();
     this.audio.dispose();
     this.ctx.dispose();
   }

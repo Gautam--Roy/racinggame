@@ -13,12 +13,13 @@ export class Hud {
   private mapScale = 1;
   private mapOff = { x: 0, y: 0 };
   private mapPath = new Path2D();
+  private boundMuteClick = () => this.onMuteClick?.();
 
   /** Set by game.ts; fired when the mute button is clicked. */
   onMuteClick: (() => void) | null = null;
 
   constructor() {
-    $('mute-btn').addEventListener('click', () => this.onMuteClick?.());
+    $('mute-btn').addEventListener('click', this.boundMuteClick);
   }
 
   show(): void {
@@ -115,5 +116,11 @@ export class Hud {
 
   setMuted(m: boolean): void {
     $('mute-btn').textContent = m ? '🔇' : '🔊';
+  }
+
+  /** Remove the mute-button listener so repeated Game/Hud construction across races doesn't accumulate listeners. */
+  dispose(): void {
+    $('mute-btn').removeEventListener('click', this.boundMuteClick);
+    this.onMuteClick = null;
   }
 }

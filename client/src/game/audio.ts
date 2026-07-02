@@ -1,9 +1,28 @@
 import * as THREE from 'three';
 
+// Shared across all AudioManager instances/races. Browsers cap the number of
+// concurrent AudioContexts, and autoplay policy requires the context be
+// created/resumed from a user-gesture handler. We build it once, lazily, on
+// the first gesture and reuse it for every subsequent race/rematch instead of
+// constructing a fresh (born-suspended, potentially silent) context each time.
+let sharedCtx: AudioContext | null = null;
+
+/** Construct the shared AudioContext on demand and resume it if suspended. */
+function ensureContext(): AudioContext | null {
+  if (!sharedCtx) {
+    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) return null;
+    sharedCtx = new Ctx();
+  }
+  if (sharedCtx.state === 'suspended') void sharedCtx.resume();
+  return sharedCtx;
+}
+
 /**
- * Lazily-constructed Web Audio soundscape. All nodes are created on `unlock()`,
- * called from a user-gesture handler in main.ts (autoplay policy). Every public
- * method no-ops safely before unlock so callers never need to guard.
+ * Web Audio soundscape built on a shared, gesture-gated AudioContext. The
+ * node graph is (re)built on `unlock()`, called from a user-gesture handler
+ * in main.ts (autoplay policy). Every public method no-ops safely before
+ * unlock so callers never need to guard.
  */
 export class AudioManager {
   private ctx: AudioContext | null = null;
@@ -24,15 +43,17 @@ export class AudioManager {
 
   muted = false;
 
-  /** Construct the audio graph on first user gesture. Safe to call multiple times. */
+  /**
+   * Get (or create) the shared AudioContext and, on first call for this
+   * instance, build this instance's node graph on it. Idempotent and safe
+   * to call repeatedly — each call re-attempts resume() if suspended.
+   */
   unlock(): void {
-    if (this.ctx) {
-      if (this.ctx.state === 'suspended') this.ctx.resume();
-      return;
-    }
-    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    const ctx = new Ctx();
+    const ctx = ensureContext();
+    if (!ctx) return;
     this.ctx = ctx;
+
+    if (this.master) return; // node graph already built for this instance
 
     this.master = ctx.createGain();
     this.master.gain.value = this.muted ? 0 : 1;
@@ -145,7 +166,7 @@ export class AudioManager {
     const t = ctx.currentTime;
     const dur = 0.4;
     const r = clamp01(distanceRatio);
-    const gainValue = 0.3 / (1 + 3 * r);
+    const gainValue = 0.3 / (1 + 3 * r); // 0.3 is the max amplitude (spec formula normalized)
 
     for (const freq of [370, 466]) {
       const osc = ctx.createOscillator();
@@ -250,6 +271,12 @@ export class AudioManager {
     return this.muted;
   }
 
+  /**
+   * Tear down this instance's node graph only. The shared AudioContext is
+   * NOT closed here — it persists across races so a rematch (a fresh
+   * AudioManager instance) can reuse it instead of hitting the browser's
+   * context cap or being born suspended without a gesture.
+   */
   dispose(): void {
     try {
       this.engineOsc?.stop();
@@ -258,8 +285,21 @@ export class AudioManager {
     } catch {
       /* already stopped */
     }
-    void this.ctx?.close();
+    try {
+      this.master?.disconnect();
+    } catch {
+      /* already disconnected */
+    }
+    this.engineOsc = null;
+    this.engineSubOsc = null;
+    this.engineFilter = null;
+    this.engineGain = null;
+    this.crowdSource = null;
+    this.crowdFilter = null;
+    this.crowdGain = null;
+    this.master = null;
     this.ctx = null;
+    delete (window as unknown as { __audioDebug?: unknown }).__audioDebug;
   }
 }
 
@@ -288,8 +328,8 @@ function renderPinkNoise(ctx: AudioContext, seconds: number): AudioBuffer {
     b3 = 0.8665 * b3 + white * 0.3104856;
     b4 = 0.55 * b4 + white * 0.5329522;
     b5 = -0.7616 * b5 - white * 0.016898;
-    const pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
     b6 = white * 0.115926;
+    const pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
     data[i] = pink * 0.11;
   }
   return buffer;

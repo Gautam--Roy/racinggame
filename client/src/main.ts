@@ -54,7 +54,6 @@ function onMessage(msg: ServerMsg): void {
         sendHorn: () => socket?.send({ type: 'horn' }),
       }).then((g) => {
         game = g;
-        g.audio.unlock();
         g.start(msg.countdownMs);
       });
       break;
@@ -104,19 +103,19 @@ if (location.search.includes('practice')) {
     )
     .then((g) => {
       game = g;
-      g.audio.unlock();
       g.start(1500);
     });
 } else {
   screens.show('menu');
 }
 
-// Autoplay policies require a user gesture before AudioContext can start; unlock once,
-// for whichever Game instance is live at the time.
-function unlockAudioOnce(): void {
+// Autoplay policies require a user gesture before an AudioContext can start (or
+// resume). These listeners are permanent (never removed): unlock() is idempotent
+// and cheap, and a fresh gesture is needed for every race/rematch since `game` is
+// reassigned each time a new Game is constructed.
+function unlockAudio(): void {
   game?.audio.unlock();
-  document.removeEventListener('click', unlockAudioOnce);
-  document.removeEventListener('keydown', unlockAudioOnce);
 }
-document.addEventListener('click', unlockAudioOnce);
-document.addEventListener('keydown', unlockAudioOnce);
+document.addEventListener('click', unlockAudio);
+document.addEventListener('keydown', unlockAudio);
+document.addEventListener('pointerdown', unlockAudio);
