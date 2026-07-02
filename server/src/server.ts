@@ -11,8 +11,11 @@ interface Conn {
   room: Room | null;
 }
 
-export function createGameServer(port: number): WebSocketServer {
-  const wss = new WebSocketServer({ port });
+export type CreateGameServerOpts = { port: number } | { server: import('http').Server };
+
+export function createGameServer(opts: number | CreateGameServerOpts): WebSocketServer {
+  const resolved: CreateGameServerOpts = typeof opts === 'number' ? { port: opts } : opts;
+  const wss = new WebSocketServer('server' in resolved ? { server: resolved.server } : { port: resolved.port });
   const lobby = new LobbyManager();
   const conns = new Map<string, Conn>();
   const roomTimers = new Map<string, ReturnType<typeof setTimeout>>();

@@ -6,7 +6,9 @@ export class GameSocket {
   constructor(
     private readonly onMessage: (msg: ServerMsg) => void,
     private readonly onClose: () => void = () => {},
-    url = `ws://${location.hostname}:8080`,
+    url = location.port === '5173'
+      ? `ws://${location.hostname}:8080`
+      : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`,
   ) {
     this.ws = new WebSocket(url);
     this.ws.addEventListener('message', (e) => {

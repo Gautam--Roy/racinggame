@@ -1,0 +1,15 @@
+services:
+  racinggame:
+    build: .
+    restart: unless-stopped
+    networks: [traefik]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.racinggame.rule=Host(`${RACING_DOMAIN:?set RACING_DOMAIN in .env}`)
+      - traefik.http.routers.racinggame.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
+      - traefik.http.routers.racinggame.tls.certresolver=${CERT_RESOLVER:-letsencrypt}
+      - traefik.http.services.racinggame.loadbalancer.server.port=8080
+networks:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}

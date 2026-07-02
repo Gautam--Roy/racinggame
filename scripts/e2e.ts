@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { createGameServer } from '../server/src/server';
 
 const PORT = 8123;
-const wss = createGameServer(PORT);
+const wss = createGameServer({ port: PORT });
 const bots = spawn('npx', ['tsx', 'scripts/bots.ts'], {
   env: { ...process.env, WS_URL: `ws://localhost:${PORT}` },
   stdio: 'inherit',
