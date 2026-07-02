@@ -78,6 +78,15 @@ export function createGameServer(port: number): WebSocketServer {
         }
         break;
       }
+      case 'horn': {
+        if (conn.room?.phase === 'racing') broadcast(conn.room, { type: 'horn', id: conn.id }, conn.id);
+        break;
+      }
+      case 'pickup': {
+        if (conn.room?.phase === 'racing' && Number.isInteger(msg.idx) && msg.idx >= 0)
+          broadcast(conn.room, { type: 'pickup', idx: msg.idx, id: conn.id }, conn.id);
+        break;
+      }
     }
   }
 

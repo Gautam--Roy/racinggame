@@ -29,6 +29,10 @@ class Bot {
     return new Promise((res) => this.ws.on('open', res));
   }
 
+  received(type: ServerMsg['type']): boolean {
+    return this.msgs.some((m) => m.type === type);
+  }
+
   expect<T extends ServerMsg['type']>(type: T, timeoutMs = 5000): Promise<Extract<ServerMsg, { type: T }>> {
     const found = this.msgs.find((m) => m.type === type);
     if (found) return Promise.resolve(found as Extract<ServerMsg, { type: T }>);
@@ -60,6 +64,22 @@ async function main() {
   bots[0].send({ type: 'start' });
   await Promise.all(bots.map((b) => b.expect('countdown')));
   console.log('countdown received by all 4 bots');
+
+  // relay checks: horn + pickup broadcast to everyone except the sender
+  bots[0].send({ type: 'horn' });
+  bots[0].send({ type: 'pickup', idx: 2 });
+  const [hornB, hornC, hornD] = await Promise.all(bots.slice(1).map((b) => b.expect('horn')));
+  const [pickupB, pickupC, pickupD] = await Promise.all(bots.slice(1).map((b) => b.expect('pickup')));
+  const hornIds = [hornB.id, hornC.id, hornD.id];
+  const pickupIds = [pickupB.id, pickupC.id, pickupD.id];
+  if (new Set(hornIds).size !== 1) fail(`horn id mismatch across bots: ${hornIds.join(',')}`);
+  if (new Set(pickupIds).size !== 1) fail(`pickup id mismatch across bots: ${pickupIds.join(',')}`);
+  if (pickupB.idx !== 2 || pickupC.idx !== 2 || pickupD.idx !== 2)
+    fail(`pickup idx mismatch: ${[pickupB.idx, pickupC.idx, pickupD.idx].join(',')}`);
+  if (hornIds[0] !== pickupIds[0]) fail(`horn/pickup sender id mismatch: ${hornIds[0]} vs ${pickupIds[0]}`);
+  await new Promise((res) => setTimeout(res, 500));
+  if (bots[0].received('horn') || bots[0].received('pickup')) fail('sender received its own relayed message');
+  console.log('relay checks OK');
 
   // simulate state traffic, then staggered finishes (Ava wins)
   bots.forEach((b, i) => {

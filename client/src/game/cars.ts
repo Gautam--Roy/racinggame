@@ -11,6 +11,10 @@ const ACCENT: Record<CarModel, number> = {
   'race-future': 0x2a6fd8,
   'sedan-sports': 0x2ad860,
   suv: 0xd8b02a,
+  'hatchback-sports': 0x8a2ad8,
+  police: 0x2a4ad8,
+  taxi: 0xd8b02a,
+  ambulance: 0xd84a4a,
 };
 
 const loader = new GLTFLoader();
