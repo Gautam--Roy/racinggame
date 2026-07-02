@@ -21,7 +21,7 @@ code. Share it; up to 3 friends **Join** with the code (same machine in another
 tab, your LAN, or a deployed URL). The host presses **Start Race**. First to
 complete 3 laps wins; the results screen shows final standings.
 
-- **Drive:** `W`/`A`/`S`/`D` or arrow keys · **Handbrake:** `Space`
+- **Drive:** `W`/`A`/`S`/`D` or arrow keys · **Handbrake:** `Space` · **Turbo:** `Shift` (grab the glowing pickups) · **Horn:** `H` · **Mute:** `M`
 - **Practice solo:** http://localhost:5173/?practice
 
 The HUD shows speed, lap, live position, current lap time, total race time, and

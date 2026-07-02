@@ -35,7 +35,7 @@ function onMessage(msg: ServerMsg): void {
       players = msg.players;
       screens.renderLobby(roomCode, players, selfId);
       screens.show('lobby');
-      preloadCars().catch(() => {}); // warm all 4 models during lobby; missing models fall back per-car
+      preloadCars().catch(() => {}); // warm all car models during lobby; missing models fall back per-car
       break;
     case 'lobby':
       players = msg.players;
