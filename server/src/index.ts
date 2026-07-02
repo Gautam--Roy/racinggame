@@ -3,6 +3,12 @@ import http from 'node:http';
 import { createGameServer } from './server';
 import { createStaticHandler } from './static';
 
+// Defense-in-depth: this relay keeps all room state in memory, so an
+// uncaught error would otherwise crash the process and drop every
+// connected player. Log-and-survive is the correct behavior here.
+process.on('uncaughtException', (e) => console.error('uncaught:', e));
+process.on('unhandledRejection', (e) => console.error('unhandled rejection:', e));
+
 const port = Number(process.env.PORT) || 8080;
 const staticDir = process.env.STATIC_DIR ?? (fs.existsSync('client/dist') ? 'client/dist' : null);
 
