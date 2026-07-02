@@ -3,10 +3,11 @@ import * as THREE from 'three';
 import { CarState, PlayerInfo, Progress, progressScore, STATE_HZ, TOTAL_LAPS } from '../../../shared/src/protocol';
 import { SnapshotBuffer } from '../net/interpolation';
 import { Hud } from '../ui/hud';
+import { AudioManager } from './audio';
 import { ChaseCamera } from './camera';
 import { instantiateCar } from './cars';
 import { Input } from './input';
-import { CAR_HALF, createLocalCar, createRemoteCar, createWorld, driveCar, freezeCar, initRapier } from './physics';
+import { CAR_HALF, createLocalCar, createRemoteCar, createWorld, driveCar, freezeCar, initRapier, MAX_SPEED } from './physics';
 import { CheckpointTracker } from './raceLogic';
 import { createScene, SceneCtx } from './scene';
 import { buildTrack, curve, gridPose, ROAD_WIDTH, TrackData } from './track';
@@ -14,10 +15,13 @@ import { buildTrack, curve, gridPose, ROAD_WIDTH, TrackData } from './track';
 const FIXED_DT = 1 / 60;
 const INTERP_DELAY_MS = 120;
 const CP_RADIUS = ROAD_WIDTH * 0.75;
+const COLLISION_DROP_THRESHOLD = 6; // m/s
+const COLLISION_DROP_RANGE = 12; // m/s, maps drop above threshold to intensity 0..1
 
 export interface GameCallbacks {
   sendState: (state: CarState) => void;
   sendFinished: (timeMs: number) => void;
+  sendHorn: () => void;
 }
 
 interface RemoteCar {
@@ -38,6 +42,9 @@ export class Game {
   private myMesh!: THREE.Group;
   private tracker = new CheckpointTracker(0, TOTAL_LAPS); // re-created with real cp count in create()
   private remotes = new Map<string, RemoteCar>();
+  readonly audio = new AudioManager();
+  private prevHorizSpeed = 0;
+  private lastCountdownText: string | null = null;
   private disposed = false;
   private countdownTimer: ReturnType<typeof setTimeout> | null = null;
   private started = false;
@@ -82,6 +89,7 @@ export class Game {
       mapPts.push({ x: p.x, z: p.z });
     }
     game.hud.initMinimap(mapPts);
+    game.hud.onMuteClick = () => game.hud.setMuted(game.audio.toggleMuted());
 
     for (const p of players) {
       const mesh = await instantiateCar(p.car);
@@ -117,9 +125,15 @@ export class Game {
         this.phase = 'racing';
         this.lapStart = this.goTime;
         this.hud.setCountdown('GO!');
+        this.audio.countdownBeep(true);
         this.countdownTimer = setTimeout(() => this.hud.setCountdown(null), 800);
       } else {
-        this.hud.setCountdown(`${Math.ceil(left / 1000)}`);
+        const text = `${Math.ceil(left / 1000)}`;
+        this.hud.setCountdown(text);
+        if (text !== this.lastCountdownText) {
+          this.lastCountdownText = text;
+          this.audio.countdownBeep(false);
+        }
         this.countdownTimer = setTimeout(tick, 100);
       }
     };
@@ -150,7 +164,16 @@ export class Game {
     cancelAnimationFrame(this.raf);
     this.input.dispose();
     this.hud.hide();
+    this.audio.dispose();
     this.ctx.dispose();
+  }
+
+  /** Called by main.ts when a remote's horn ServerMsg arrives; louder when they're closer. */
+  onHorn(id: string): void {
+    const r = this.remotes.get(id);
+    if (!r) return;
+    const dist = horizDist(this.currPos, r.mesh.position);
+    this.audio.horn(Math.min(1, dist / 120));
   }
 
   private syncFromBody(): void {
@@ -164,10 +187,28 @@ export class Game {
     this.input.update(FIXED_DT);
     if (this.phase === 'racing') driveCar(this.myBody, this.input, FIXED_DT);
     else freezeCar(this.myBody);
+    if (this.input.hornPressed) {
+      this.cb.sendHorn();
+      this.audio.horn(0);
+    }
+    if (this.input.mutePressed) {
+      this.hud.setMuted(this.audio.toggleMuted());
+    }
     this.world.step();
     this.prevPos.copy(this.currPos);
     this.prevQuat.copy(this.currQuat);
     this.syncFromBody();
+
+    const lvNow = this.myBody.linvel();
+    const horizSpeed = Math.hypot(lvNow.x, lvNow.z);
+    if (this.phase === 'racing') {
+      const drop = this.prevHorizSpeed - horizSpeed;
+      if (drop > COLLISION_DROP_THRESHOLD) {
+        this.audio.collision((drop - COLLISION_DROP_THRESHOLD) / COLLISION_DROP_RANGE);
+      }
+    }
+    this.prevHorizSpeed = horizSpeed;
+
     this.updateRaceLogic(); // Task 13
   }
 
@@ -273,6 +314,8 @@ export class Game {
       [...this.remotes.values()].map((r) => ({ x: r.mesh.position.x, z: r.mesh.position.z })),
     );
     this.chase.update(this.renderPos, this.renderQuat, speed, dt);
+    this.audio.engine(speed / MAX_SPEED, false); // Task 4: turbo
+    this.audio.crowd(0); // Task 5: real proximity via setCrowdSources + nearest-stand distance
     if (this.phase === 'racing') this.netSend(dt);
     this.ctx.renderer.render(this.ctx.scene, this.ctx.camera);
   };

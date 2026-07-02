@@ -14,6 +14,13 @@ export class Hud {
   private mapOff = { x: 0, y: 0 };
   private mapPath = new Path2D();
 
+  /** Set by game.ts; fired when the mute button is clicked. */
+  onMuteClick: (() => void) | null = null;
+
+  constructor() {
+    $('mute-btn').addEventListener('click', () => this.onMuteClick?.());
+  }
+
   show(): void {
     $('hud').classList.remove('hidden');
   }
@@ -104,5 +111,9 @@ export class Hud {
 
   setWaiting(on: boolean): void {
     $('waiting').classList.toggle('hidden', !on);
+  }
+
+  setMuted(m: boolean): void {
+    $('mute-btn').textContent = m ? '🔇' : '🔊';
   }
 }

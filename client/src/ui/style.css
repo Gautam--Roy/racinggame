@@ -35,6 +35,12 @@ html, body { height: 100%; overflow: hidden; background: #0b0e14; font-family: s
 #speed { right: 28px; bottom: 24px; font-size: 42px; font-weight: 800; font-style: italic; }
 #lap { left: 28px; top: 20px; font-size: 26px; font-weight: 700; }
 #pos { left: 28px; top: 54px; font-size: 26px; font-weight: 700; color: #ffd24d; }
+#mute-btn {
+  position: absolute; left: 28px; top: 96px; pointer-events: auto;
+  font-size: 20px; padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(10, 13, 20, 0.55); color: #fff; cursor: pointer; line-height: 1;
+}
+#mute-btn:hover { background: rgba(10, 13, 20, 0.75); }
 #laptime { right: 28px; bottom: 84px; font-size: 20px; font-weight: 600; }
 #totaltime { right: 28px; bottom: 112px; font-size: 20px; font-weight: 600; color: #ffd24d; }
 #minimap { position: absolute; right: 20px; top: 20px; width: 170px; height: 170px; }

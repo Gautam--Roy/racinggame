@@ -51,14 +51,19 @@ function onMessage(msg: ServerMsg): void {
       Game.create(canvas, selfId, racers, msg.grid, {
         sendState: (state) => socket?.send({ type: 'state', state }),
         sendFinished: (timeMs) => socket?.send({ type: 'finished', timeMs }),
+        sendHorn: () => socket?.send({ type: 'horn' }),
       }).then((g) => {
         game = g;
+        g.audio.unlock();
         g.start(msg.countdownMs);
       });
       break;
     }
     case 'state':
       game?.onRemoteState(msg.id, msg.state);
+      break;
+    case 'horn':
+      game?.onHorn(msg.id);
       break;
     case 'playerLeft':
       game?.onPlayerLeft(msg.id);
@@ -91,12 +96,27 @@ if (location.search.includes('practice')) {
   screens.show('none');
   preloadCars(['race'])
     .then(() =>
-      Game.create(canvas, 'solo', [me], { solo: 0 }, { sendState: () => {}, sendFinished: () => {} }),
+      Game.create(canvas, 'solo', [me], { solo: 0 }, {
+        sendState: () => {},
+        sendFinished: () => {},
+        sendHorn: () => {},
+      }),
     )
     .then((g) => {
       game = g;
+      g.audio.unlock();
       g.start(1500);
     });
 } else {
   screens.show('menu');
 }
+
+// Autoplay policies require a user gesture before AudioContext can start; unlock once,
+// for whichever Game instance is live at the time.
+function unlockAudioOnce(): void {
+  game?.audio.unlock();
+  document.removeEventListener('click', unlockAudioOnce);
+  document.removeEventListener('keydown', unlockAudioOnce);
+}
+document.addEventListener('click', unlockAudioOnce);
+document.addEventListener('keydown', unlockAudioOnce);
