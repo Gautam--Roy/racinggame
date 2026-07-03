@@ -198,8 +198,13 @@ export function buildSpectators(curve: THREE.CatmullRomCurve3): Spectators {
       const acrossJitter = (Math.random() - 0.5) * (STAND_WIDTH - 1.2);
       const depthJitter = (Math.random() - 0.5) * (STAND_DEPTH - 0.6);
       const bx = acrossJitter;
-      const by = TIER_HEIGHT * tier + 0.05;
-      const bz = -(tier * STAND_DEPTH) - STAND_DEPTH / 2 + depthJitter;
+      // Person geometry's bottom is at local y=0 (body cylinder translated so its base sits at
+      // the origin). Seat it flush on this tier's TOP surface: tier `t`'s box is centered at
+      // TIER_HEIGHT/2 + t*TIER_HEIGHT with height TIER_HEIGHT, so its top is TIER_HEIGHT*(t+1).
+      const by = TIER_HEIGHT * (tier + 1);
+      // Pull instances forward off the tier's leading edge (away from the riser in front) so feet
+      // don't poke through the next tier down; bias jitter range toward the back half of the tread.
+      const bz = -(tier * STAND_DEPTH) - STAND_DEPTH / 2 + depthJitter * 0.5 - STAND_DEPTH * 0.15;
       const b = new THREE.Vector3(bx, by, bz);
       base.push(b);
       phase.push(Math.random() * Math.PI * 2);

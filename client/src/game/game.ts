@@ -7,11 +7,11 @@ import { AudioManager } from './audio';
 import { ChaseCamera } from './camera';
 import { instantiateCar } from './cars';
 import { Input } from './input';
-import { CAR_HALF, createLocalCar, createRemoteCar, createWorld, driveCar, freezeCar, initRapier, MAX_SPEED } from './physics';
+import { CAR_HALF, createLocalCar, createRemoteCar, createWorld, driveCar, freezeCar, initRapier, isDrifting, MAX_SPEED } from './physics';
 import { CheckpointTracker } from './raceLogic';
 import { createScene, SceneCtx } from './scene';
 import { buildTrack, curve, gridPose, ROAD_WIDTH, TrackData } from './track';
-import { findTiltTarget, findWheels, Wheels } from './cars';
+import { findTiltTarget, findWheels, prepareWheels, Wheels } from './cars';
 import { ParticleSystem } from './effects';
 import { buildPickups, Pickups, slipstreamTarget } from './pickups';
 import { buildSpectators, Spectators } from './spectators';
@@ -30,6 +30,7 @@ const TILT_PITCH_MAX = 0.06; // rad
 /** Per-car visual animation state: wheel spin/steer, body tilt, smoothed accel estimates. */
 interface CarAnim {
   wheels: Wheels;
+  steer: { left?: THREE.Group; right?: THREE.Group };
   tilt: THREE.Object3D | undefined;
   fwdSpeed: number; // smoothed signed forward speed estimate (m/s), used for wheel spin + remotes
   prevHorizVel: THREE.Vector3; // own car only: full (x,z) velocity from the physics body
@@ -46,8 +47,11 @@ function createCarAnim(mesh: THREE.Group): CarAnim {
     warnedNoWheels.add(mesh);
     console.warn('car model has no named wheel nodes — wheels will not animate');
   }
+  // Insert steering pivots on this instantiated (already-cloned) car only — never on the shared template.
+  const steer = prepareWheels(wheels);
   return {
     wheels,
+    steer,
     tilt: findTiltTarget(mesh),
     fwdSpeed: 0,
     prevHorizVel: new THREE.Vector3(),
@@ -104,6 +108,7 @@ export class Game {
   private remotes = new Map<string, RemoteCar>();
   readonly audio = new AudioManager();
   private prevHorizSpeed = 0;
+  private lastScreechAt = 0;
   private lastCountdownText: string | null = null;
   private disposed = false;
   private countdownTimer: ReturnType<typeof setTimeout> | null = null;
@@ -372,15 +377,15 @@ export class Game {
     const horizSpeed = Math.hypot(lv.x, lv.z);
 
     const anim = this.myAnim;
-    const { wheels, tilt } = anim;
+    const { wheels, steer, tilt } = anim;
     const spinDelta = (fwdSpeed / WHEEL_RADIUS) * dt;
     if (wheels.fl) wheels.fl.rotation.x += spinDelta;
     if (wheels.fr) wheels.fr.rotation.x += spinDelta;
     if (wheels.bl) wheels.bl.rotation.x += spinDelta;
     if (wheels.br) wheels.br.rotation.x += spinDelta;
     const steerY = this.input.steer * STEER_WHEEL_MAX;
-    if (wheels.fl) wheels.fl.rotation.y = steerY;
-    if (wheels.fr) wheels.fr.rotation.y = steerY;
+    if (steer.left) steer.left.rotation.y = steerY;
+    if (steer.right) steer.right.rotation.y = steerY;
 
     // body tilt from lateral/longitudinal acceleration
     const lateral = LAT_SCRATCH.set(lv.x - anim.prevHorizVel.x, 0, lv.z - anim.prevHorizVel.z);
@@ -398,14 +403,20 @@ export class Game {
       tilt.rotation.x = anim.pitch;
     }
 
-    // drift smoke: own car, handbrake + moving reasonably fast
-    if (this.input.handbrake && horizSpeed > 8) {
+    // drift smoke: own car, handbrake or hard-cornering-at-speed, moving reasonably fast
+    const drifting = isDrifting(this.input.steer, this.input.handbrake, fwdSpeed) && horizSpeed > 8;
+    if (drifting) {
       for (const w of [wheels.bl, wheels.br]) {
         if (!w) continue;
         w.getWorldPosition(SMOKE_POS);
         SMOKE_VEL.set((Math.random() - 0.5) * 0.6, 1.2 + Math.random() * 0.6, (Math.random() - 0.5) * 0.6);
         SMOKE_VEL.addScaledVector(VEL_SCRATCH.set(lv.x, 0, lv.z), 0.3);
         this.effects.spawn(SMOKE_POS, SMOKE_VEL, 0.7, 0.9, 0x888888);
+      }
+      const nowMs = performance.now();
+      if (nowMs - this.lastScreechAt > 180) {
+        this.lastScreechAt = nowMs;
+        this.audio.tireScreech();
       }
     }
 
@@ -529,6 +540,7 @@ export class Game {
     }
     this.effects.update(dt);
     this.pickups.update(now, dt);
+    this.ctx.cloudGroup.rotation.y += 0.0015 * dt;
 
     this.carPosScratch.length = 0;
     this.carPosScratch.push(this.renderPos);
