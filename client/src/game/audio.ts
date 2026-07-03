@@ -209,6 +209,33 @@ export class AudioManager {
     source.stop(t + dur);
   }
 
+  /** 160ms bandpass white-noise chirp, one-shot self-collecting like collision(). Used while drifting. */
+  tireScreech(): void {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const dur = 0.16;
+    const buffer = renderWhiteNoise(ctx, dur);
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 1100;
+    filter.Q.value = 3;
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.06, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.master);
+    source.start(t);
+    source.stop(t + dur);
+  }
+
   /** gain scales the peak amplitude (0.3 base); pass a lower value for the pickup-collect variant. */
   turboWhoosh(gain = 1): void {
     if (!this.ctx || !this.master) return;

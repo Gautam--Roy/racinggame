@@ -12,6 +12,13 @@ const MAX_REVERSE = 9;
 const TURN_RATE = 2.3; // rad/s at full steer
 const GRIP = 9; // lateral velocity kill rate
 const GRIP_HANDBRAKE = 2.2;
+const DRIFT_STEER_THRESHOLD = 0.65;
+const DRIFT_SPEED_THRESHOLD = 18; // m/s
+
+/** True when the car should be sliding: handbrake pulled, or steering hard at speed. */
+export function isDrifting(steer: number, handbrake: boolean, fwdSpeed: number): boolean {
+  return handbrake || (Math.abs(steer) > DRIFT_STEER_THRESHOLD && Math.abs(fwdSpeed) > DRIFT_SPEED_THRESHOLD);
+}
 
 let initialized = false;
 export async function initRapier(): Promise<void> {
@@ -95,7 +102,11 @@ export function driveCar(body: RAPIER.RigidBody, input: Input, dt: number, opts:
   VEL.addScaledVector(FWD, accel * dt);
 
   LAT.copy(VEL).addScaledVector(FWD, -VEL.dot(FWD)); // lateral component
-  const grip = input.handbrake ? GRIP_HANDBRAKE : GRIP;
+  const grip = isDrifting(input.steer, input.handbrake, fwdSpeed)
+    ? input.handbrake
+      ? GRIP_HANDBRAKE
+      : GRIP * 0.45
+    : GRIP;
   VEL.addScaledVector(LAT, -Math.min(1, grip * dt));
 
   body.setLinvel({ x: VEL.x, y: lv.y, z: VEL.z }, true);
