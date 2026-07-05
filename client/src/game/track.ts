@@ -27,6 +27,7 @@ export interface TrackData {
   group: THREE.Group; // all visuals — add to scene
   barriers: BarrierBox[]; // physics layer creates colliders from these
   checkpoints: Checkpoint[]; // [0] is the start/finish line
+  startLights: THREE.MeshStandardMaterial[]; // 5 materials, one per light disc, driven by game.ts countdown
 }
 
 export function buildTrack(): TrackData {
@@ -102,6 +103,36 @@ export function buildTrack(): TrackData {
   beam.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), side);
   group.add(beam);
 
+  // --- F1-style start light rig, mounted under the gantry beam, facing the grid ---
+  // Cars approach the line from behind it (grid sits at u≈0.99, just before u=0/checkpoint 0),
+  // so the rig must face back along -tangent (toward the grid), not along the tangent.
+  const startLights: THREE.MeshStandardMaterial[] = [];
+  const rigGroup = new THREE.Group();
+  const housingGeo = new THREE.BoxGeometry(3.2, 0.5, 0.25);
+  const housingMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.6 });
+  const housing = new THREE.Mesh(housingGeo, housingMat);
+  rigGroup.add(housing);
+  const discGeo = new THREE.CircleGeometry(0.18, 16);
+  const discCount = 5;
+  for (let i = 0; i < discCount; i++) {
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x220000,
+      emissive: 0x000000,
+      emissiveIntensity: 0,
+      roughness: 0.4,
+    });
+    startLights.push(mat);
+    const disc = new THREE.Mesh(discGeo, mat);
+    const x = (i - (discCount - 1) / 2) * 0.6;
+    disc.position.set(x, 0, 0.13);
+    rigGroup.add(disc);
+  }
+  rigGroup.position.copy(start.pos).setY(6.3);
+  // Face the grid: the grid approaches from behind the line, i.e. along -tangent.
+  const facingGrid = start.tangent.clone().negate();
+  rigGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), facingGrid);
+  group.add(rigGroup);
+
   // --- trees (instanced, kept off the road) ---
   const roadPts: THREE.Vector3[] = [];
   for (let i = 0; i < 100; i++) roadPts.push(curve.getPointAt(i / 100));
@@ -127,7 +158,7 @@ export function buildTrack(): TrackData {
   trunks.count = leaves.count = ti;
   group.add(trunks, leaves);
 
-  return { group, barriers, checkpoints };
+  return { group, barriers, checkpoints, startLights };
 }
 
 function ribbon(width: number, y: number, mat: THREE.Material): THREE.Mesh {
