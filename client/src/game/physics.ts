@@ -81,11 +81,13 @@ const Q = new THREE.Quaternion();
 export interface DriveOpts {
   turbo: boolean;
   slipBonus: number;
-  /** Caller-owned hysteresis flag (see game.ts) — true while the car should behave as drifting (loose cornering grip + oversteer yaw boost). */
+  /** Caller-owned hysteresis flag (see game.ts) — true while the car should behave as drifting (loose cornering grip + oversteer yaw boost). Used for smoke/audio gating; the physics response itself is driven continuously by driftAmount. */
   drifting: boolean;
+  /** Continuous 0..1 ramp toward the drifting target (see game.ts), so grip/oversteer engage smoothly over ~200ms instead of snapping the instant the drifting flag flips. Defaults to 0 (no drift). */
+  driftAmount?: number;
 }
 
-const DEFAULT_DRIVE_OPTS: DriveOpts = { turbo: false, slipBonus: 0, drifting: false };
+const DEFAULT_DRIVE_OPTS: DriveOpts = { turbo: false, slipBonus: 0, drifting: false, driftAmount: 0 };
 
 /** Arcade controller: read velocity, apply engine/brake/grip, write back. Collisions still shove the car because Rapier's solver adjusts velocity during the step and we re-read it next step. */
 export function driveCar(body: RAPIER.RigidBody, input: Input, dt: number, opts: DriveOpts = DEFAULT_DRIVE_OPTS): void {
@@ -107,13 +109,15 @@ export function driveCar(body: RAPIER.RigidBody, input: Input, dt: number, opts:
   VEL.addScaledVector(FWD, accel * dt);
 
   LAT.copy(VEL).addScaledVector(FWD, -VEL.dot(FWD)); // lateral component
-  const grip = opts.drifting ? (input.handbrake ? GRIP_HANDBRAKE : GRIP_DRIFT_CORNER) : GRIP;
+  const driftAmount = THREE.MathUtils.clamp(opts.driftAmount ?? 0, 0, 1);
+  const driftGripTarget = input.handbrake ? GRIP_HANDBRAKE : GRIP_DRIFT_CORNER;
+  const grip = THREE.MathUtils.lerp(GRIP, driftGripTarget, driftAmount);
   VEL.addScaledVector(LAT, -Math.min(1, grip * dt));
 
   body.setLinvel({ x: VEL.x, y: lv.y, z: VEL.z }, true);
 
   const speedFactor = THREE.MathUtils.clamp(Math.abs(fwdSpeed) / 11, 0, 1) * Math.sign(fwdSpeed || 1);
-  const oversteer = opts.drifting ? DRIFT_OVERSTEER_MULT : 1;
+  const oversteer = 1 + (DRIFT_OVERSTEER_MULT - 1) * driftAmount;
   body.setAngvel({ x: 0, y: input.steer * TURN_RATE * speedFactor * oversteer, z: 0 }, true);
 }
 

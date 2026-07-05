@@ -162,6 +162,9 @@ export class Game {
   private readonly slipScratch: THREE.Vector3[] = [];
   /** Hysteresis-owned drift state for the LOCAL car — single source of truth for both physics grip/oversteer and smoke/camera visuals. */
   private drifting = false;
+  /** Continuous 0..1 ramp toward (drifting ? 1 : 0), ~200ms time constant, so grip/oversteer engage
+   * smoothly instead of snapping the instant the `drifting` hysteresis flag flips. */
+  private driftAmount = 0;
 
   private get turboActive(): boolean {
     return performance.now() < this.turboUntil;
@@ -365,7 +368,14 @@ export class Game {
         this.drifting = false;
       }
 
-      driveCar(this.myBody, this.input, FIXED_DT, { turbo: this.turboActive, slipBonus: this.slipBonus, drifting: this.drifting });
+      const driftTarget = this.drifting ? 1 : 0;
+      this.driftAmount += (driftTarget - this.driftAmount) * (1 - Math.exp(-5 * FIXED_DT));
+      driveCar(this.myBody, this.input, FIXED_DT, {
+        turbo: this.turboActive,
+        slipBonus: this.slipBonus,
+        drifting: this.drifting,
+        driftAmount: this.driftAmount,
+      });
       this.updateTurbo();
     } else {
       freezeCar(this.myBody);
