@@ -630,6 +630,7 @@ export class Game {
     this.effects.update(dt);
     this.pickups.update(now, dt);
     this.ctx.cloudGroup.rotation.y += 0.0015 * dt;
+    this.ctx.sky.position.copy(this.ctx.camera.position);
 
     this.carPosScratch.length = 0;
     this.carPosScratch.push(this.renderPos);

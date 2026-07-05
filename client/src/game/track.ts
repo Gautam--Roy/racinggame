@@ -5,9 +5,27 @@ export const NUM_CHECKPOINTS = 16;
 const SAMPLES = 320;
 const UP = new THREE.Vector3(0, 1, 0);
 
+// Layout: start/finish (u=0) sits mid-way through a long, dead-straight start straight
+// running along +X at z=-160. The straight is 5 collinear points ([-160,-160] through
+// [140,-160]) with u=0 placed at the middle one ([0,-160]) -- Catmull-Rom keeps the curve
+// EXACTLY on that line whenever 4 consecutive control points are collinear, so both the
+// stretch ahead of the line (toward the hairpin) and the stretch behind it (the grid) are
+// razor-straight for ~140m combined (verified: zero lateral deviation from u=0 out to u~=0.07,
+// well past the ~120m an unsteered car covers in 4s at MAX_SPEED). After the straight: a
+// hairpin, a downhill sweeper, an S-section, and a long sweeping return leg -- full loop
+// ~=1290m (curve.getLength()), within x,z in [-280,280].
 const CONTROL_POINTS = [
-  [0, -70], [55, -95], [115, -55], [125, 25], [75, 70], [25, 45],
-  [-25, 95], [-95, 80], [-130, 10], [-95, -65], [-40, -95],
+  [0, -160], [80, -160], [140, -160],
+  // hairpin
+  [185, -120], [183, -60], [130, -30],
+  // sweeper
+  [75, -40], [25, -10],
+  // S-section
+  [55, 40], [105, 53], [113, 100],
+  [70, 133], [10, 115],
+  // long sweeping return leg on the far side, back to the straight
+  [-60, 135], [-115, 95], [-137, 25],
+  [-135, -50], [-150, -110], [-160, -160], [-80, -160],
 ].map(([x, z]) => new THREE.Vector3(x, 0, z));
 
 export const curve = new THREE.CatmullRomCurve3(CONTROL_POINTS, true, 'catmullrom', 0.5);
@@ -35,7 +53,7 @@ export function buildTrack(): TrackData {
 
   // --- ground ---
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(900, 900),
+    new THREE.PlaneGeometry(1200, 1200),
     new THREE.MeshStandardMaterial({ color: 0x4e7a3d }),
   );
   ground.rotation.x = -Math.PI / 2;
@@ -138,16 +156,16 @@ export function buildTrack(): TrackData {
   for (let i = 0; i < 100; i++) roadPts.push(curve.getPointAt(i / 100));
   const trunkGeo = new THREE.CylinderGeometry(0.25, 0.35, 2.4);
   const leafGeo = new THREE.ConeGeometry(2.0, 5.0, 7);
-  const trunks = new THREE.InstancedMesh(trunkGeo, new THREE.MeshStandardMaterial({ color: 0x6b4a2b }), 160);
-  const leaves = new THREE.InstancedMesh(leafGeo, new THREE.MeshStandardMaterial({ color: 0x2f6b34 }), 160);
+  const trunks = new THREE.InstancedMesh(trunkGeo, new THREE.MeshStandardMaterial({ color: 0x6b4a2b }), 220);
+  const leaves = new THREE.InstancedMesh(leafGeo, new THREE.MeshStandardMaterial({ color: 0x2f6b34 }), 220);
   leaves.castShadow = true;
   let ti = 0;
   let attempts = 0;
   // deterministic pseudo-random so every client builds the same forest
   let seed = 42;
   const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  while (ti < 160 && attempts++ < 4000) {
-    const p = new THREE.Vector3(rand() * 700 - 350, 0, rand() * 700 - 350);
+  while (ti < 220 && attempts++ < 4000) {
+    const p = new THREE.Vector3(rand() * 960 - 480, 0, rand() * 960 - 480);
     if (roadPts.some((rp) => rp.distanceTo(p) < ROAD_WIDTH * 1.8)) continue;
     m.compose(p.clone().setY(1.2), new THREE.Quaternion(), new THREE.Vector3(1, 1, 1));
     trunks.setMatrixAt(ti, m);
