@@ -15,7 +15,7 @@ const GRIP_HANDBRAKE = 1.1;
 const GRIP_DRIFT_CORNER = GRIP * 0.22; // ≈2.0 — loose cornering grip while drifting
 export const DRIFT_ENTER_STEER = 0.65;
 export const DRIFT_EXIT_STEER = 0.45;
-export const DRIFT_SPEED_THRESHOLD = 18; // m/s
+export const DRIFT_SPEED_THRESHOLD = 15; // m/s
 const DRIFT_OVERSTEER_MULT = 1.3; // extra yaw rate while drifting, simulates the rear stepping out
 
 /** True when the car should be sliding: handbrake pulled, or steering hard at speed. Stateless "enter" test — callers owning hysteresis (game.ts) should track their own drifting flag rather than calling this every frame for the exit decision. */
