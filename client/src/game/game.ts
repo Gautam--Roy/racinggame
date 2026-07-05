@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { CarState, PlayerInfo, Progress, progressScore, STATE_HZ, TOTAL_LAPS } from '../../../shared/src/protocol';
+import { CAR_STATS, CarState, DEFAULT_LAPS, PlayerInfo, Progress, progressScore, STATE_HZ } from '../../../shared/src/protocol';
 import { SnapshotBuffer } from '../net/interpolation';
 import { Hud } from '../ui/hud';
 import { AudioManager } from './audio';
@@ -128,7 +128,9 @@ export class Game {
   private chase!: ChaseCamera;
   private myBody!: RAPIER.RigidBody;
   private myMesh!: THREE.Group;
-  private tracker = new CheckpointTracker(0, TOTAL_LAPS); // re-created with real cp count in create()
+  private laps = DEFAULT_LAPS;
+  private stats: { speed: number; accel: number } = { speed: 1, accel: 1 };
+  private tracker = new CheckpointTracker(0, DEFAULT_LAPS); // re-created with real cp count/laps in create()
   private remotes = new Map<string, RemoteCar>();
   readonly audio = new AudioManager();
   private prevHorizSpeed = 0;
@@ -180,15 +182,17 @@ export class Game {
     selfId: string,
     players: PlayerInfo[],
     grid: Record<string, number>,
+    laps: number,
     cb: GameCallbacks,
   ): Promise<Game> {
     await initRapier();
     const game = new Game(selfId, cb);
+    game.laps = laps;
     game.ctx = createScene(canvas);
     game.track = buildTrack();
     game.ctx.scene.add(game.track.group);
     game.world = createWorld(game.track.barriers);
-    game.tracker = new CheckpointTracker(game.track.checkpoints.length, TOTAL_LAPS);
+    game.tracker = new CheckpointTracker(game.track.checkpoints.length, laps);
     game.chase = new ChaseCamera(game.ctx.camera);
 
     const mapPts: { x: number; z: number }[] = [];
@@ -209,6 +213,7 @@ export class Game {
       const mesh = await instantiateCar(p.car);
       const { pos, yaw } = gridPose(grid[p.id] ?? 0);
       if (p.id === selfId) {
+        game.stats = CAR_STATS[p.car];
         game.myMesh = mesh;
         game.myAnim = createCarAnim(mesh);
         game.myBody = createLocalCar(game.world, pos, yaw);
@@ -239,7 +244,7 @@ export class Game {
   start(countdownMs: number): void {
     if (this.started || this.disposed) return; this.started = true;
     this.hud.show();
-    this.hud.setLap(1, TOTAL_LAPS);
+    this.hud.setLap(1, this.laps);
     this.goTime = performance.now() + countdownMs;
     const tick = () => {
       if (this.disposed || this.phase !== 'countdown') return;
@@ -283,7 +288,7 @@ export class Game {
     for (const mat of lights) {
       mat.emissive.setHex(emissive);
       mat.emissiveIntensity = intensity;
-      mat.color.setHex(phase === 'off' ? LIGHT_OFF_COLOR : LIGHT_OFF_COLOR);
+      mat.color.setHex(LIGHT_OFF_COLOR);
     }
   }
 
@@ -375,6 +380,7 @@ export class Game {
         slipBonus: this.slipBonus,
         drifting: this.drifting,
         driftAmount: this.driftAmount,
+        stats: this.stats,
       });
       this.updateTurbo();
     } else {
@@ -533,7 +539,7 @@ export class Game {
     if (next && horizDist(this.currPos, next.pos) < CP_RADIUS) {
       const result = this.tracker.hit(this.tracker.nextCp);
       if (result === 'lap') {
-        this.hud.setLap(this.tracker.lap, TOTAL_LAPS);
+        this.hud.setLap(this.tracker.lap, this.laps);
         this.lapStart = performance.now();
       }
       if (result === 'finish') {
@@ -630,6 +636,7 @@ export class Game {
     this.effects.update(dt);
     this.pickups.update(now, dt);
     this.ctx.cloudGroup.rotation.y += 0.0015 * dt;
+    this.ctx.sky.position.copy(this.ctx.camera.position);
 
     this.carPosScratch.length = 0;
     this.carPosScratch.push(this.renderPos);

@@ -85,9 +85,12 @@ export interface DriveOpts {
   drifting: boolean;
   /** Continuous 0..1 ramp toward the drifting target (see game.ts), so grip/oversteer engage smoothly over ~200ms instead of snapping the instant the drifting flag flips. Defaults to 0 (no drift). */
   driftAmount?: number;
+  /** Per-vehicle performance multipliers (see CAR_STATS in protocol.ts). Defaults to {1,1} (no effect). */
+  stats?: { speed: number; accel: number };
 }
 
-const DEFAULT_DRIVE_OPTS: DriveOpts = { turbo: false, slipBonus: 0, drifting: false, driftAmount: 0 };
+const DEFAULT_STATS = { speed: 1, accel: 1 };
+const DEFAULT_DRIVE_OPTS: DriveOpts = { turbo: false, slipBonus: 0, drifting: false, driftAmount: 0, stats: DEFAULT_STATS };
 
 /** Arcade controller: read velocity, apply engine/brake/grip, write back. Collisions still shove the car because Rapier's solver adjusts velocity during the step and we re-read it next step. */
 export function driveCar(body: RAPIER.RigidBody, input: Input, dt: number, opts: DriveOpts = DEFAULT_DRIVE_OPTS): void {
@@ -100,8 +103,9 @@ export function driveCar(body: RAPIER.RigidBody, input: Input, dt: number, opts:
   VEL.set(lv.x, 0, lv.z);
   const fwdSpeed = VEL.dot(FWD);
 
-  const maxSpeed = MAX_SPEED * (opts.turbo ? 1.4 : 1 + opts.slipBonus);
-  const engineAccel = ENGINE_ACCEL * (opts.turbo ? 1.6 : 1 + opts.slipBonus);
+  const stats = opts.stats ?? DEFAULT_STATS;
+  const maxSpeed = MAX_SPEED * stats.speed * (opts.turbo ? 1.4 : 1 + opts.slipBonus);
+  const engineAccel = ENGINE_ACCEL * stats.accel * (opts.turbo ? 1.6 : 1 + opts.slipBonus);
 
   let accel = 0;
   if (input.throttle > 0) accel = engineAccel * input.throttle * Math.max(0, 1 - Math.max(0, fwdSpeed) / maxSpeed);

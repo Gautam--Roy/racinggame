@@ -31,7 +31,7 @@ export function createGameServer(opts: number | CreateGameServerOpts): WebSocket
     roomTimers.delete(room.code);
     broadcast(room, { type: 'results', standings: room.standings() });
     room.resetToLobby();
-    broadcast(room, { type: 'lobby', players: room.playerInfos() });
+    broadcast(room, { type: 'lobby', players: room.playerInfos(), laps: room.laps });
   }
 
   function maybeEndRace(room: Room) {
@@ -45,25 +45,30 @@ export function createGameServer(opts: number | CreateGameServerOpts): WebSocket
     switch (msg.type) {
       case 'create': {
         conn.room = lobby.create(conn.id, msg.name);
-        send(conn.id, { type: 'created', code: conn.room.code, selfId: conn.id, players: conn.room.playerInfos() });
+        send(conn.id, { type: 'created', code: conn.room.code, selfId: conn.id, players: conn.room.playerInfos(), laps: conn.room.laps });
         break;
       }
       case 'join': {
         conn.room = lobby.join(msg.code, conn.id, msg.name);
-        send(conn.id, { type: 'joined', code: conn.room.code, selfId: conn.id, players: conn.room.playerInfos() });
-        broadcast(conn.room, { type: 'lobby', players: conn.room.playerInfos() }, conn.id);
+        send(conn.id, { type: 'joined', code: conn.room.code, selfId: conn.id, players: conn.room.playerInfos(), laps: conn.room.laps });
+        broadcast(conn.room, { type: 'lobby', players: conn.room.playerInfos(), laps: conn.room.laps }, conn.id);
         break;
       }
       case 'pickCar': {
         if (conn.room?.pickCar(conn.id, msg.car))
-          broadcast(conn.room, { type: 'lobby', players: conn.room.playerInfos() });
+          broadcast(conn.room, { type: 'lobby', players: conn.room.playerInfos(), laps: conn.room.laps });
+        break;
+      }
+      case 'setLaps': {
+        if (conn.room?.setLaps(conn.id, msg.laps))
+          broadcast(conn.room, { type: 'lobby', players: conn.room.playerInfos(), laps: conn.room.laps });
         break;
       }
       case 'start': {
         if (conn.room?.start(conn.id)) {
           const grid: Record<string, number> = {};
           conn.room.players.forEach((p, i) => (grid[p.id] = i));
-          broadcast(conn.room, { type: 'countdown', countdownMs: COUNTDOWN_MS, grid });
+          broadcast(conn.room, { type: 'countdown', countdownMs: COUNTDOWN_MS, grid, laps: conn.room.laps });
         }
         break;
       }
@@ -123,7 +128,7 @@ export function createGameServer(opts: number | CreateGameServerOpts): WebSocket
       conn.room = null;
       if (room) {
         broadcast(room, { type: 'playerLeft', id: conn.id });
-        broadcast(room, { type: 'lobby', players: room.playerInfos() });
+        broadcast(room, { type: 'lobby', players: room.playerInfos(), laps: room.laps });
         maybeEndRace(room); // remaining players might now all be finished
       } else {
         clearTimeout(roomTimers.get(code));
