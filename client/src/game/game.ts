@@ -288,7 +288,7 @@ export class Game {
     for (const mat of lights) {
       mat.emissive.setHex(emissive);
       mat.emissiveIntensity = intensity;
-      mat.color.setHex(phase === 'off' ? LIGHT_OFF_COLOR : LIGHT_OFF_COLOR);
+      mat.color.setHex(LIGHT_OFF_COLOR);
     }
   }
 
