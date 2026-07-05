@@ -19,6 +19,43 @@ function ensureContext(): AudioContext | null {
 }
 
 /**
+ * 5-gear virtual RPM model for the engine sound. Pure function (no
+ * AudioContext access) so it's directly unit-testable.
+ *
+ * Gears have overlapping bands over the 0..1 speedRatio range; within a
+ * gear's band, rpm rises from 0.3 to 1.0. We pick the HIGHEST gear whose
+ * band contains the ratio, which means as speed climbs, the engine "shifts
+ * up" at the top of each band and rpm visibly drops back down into the next
+ * gear's (lower) bandProgress — the classic arcade sawtooth.
+ */
+const GEAR_BANDS: ReadonlyArray<readonly [number, number]> = [
+  [0, 0.18],
+  [0.14, 0.34],
+  [0.3, 0.52],
+  [0.48, 0.74],
+  [0.7, 1.0],
+];
+
+export function gearRpm(speedRatio: number): { rpm: number; gear: number } {
+  const r = clamp01(speedRatio);
+  if (r < 0.02) return { rpm: 0.22, gear: 1 };
+
+  let gear = 1;
+  for (let g = GEAR_BANDS.length; g >= 1; g--) {
+    const [lo, hi] = GEAR_BANDS[g - 1];
+    if (r >= lo && r <= hi) {
+      gear = g;
+      break;
+    }
+  }
+
+  const [lo, hi] = GEAR_BANDS[gear - 1];
+  const bandProgress = clamp01((r - lo) / (hi - lo));
+  const rpm = 0.3 + 0.7 * bandProgress;
+  return { rpm, gear };
+}
+
+/**
  * Web Audio soundscape built on a shared, gesture-gated AudioContext. The
  * node graph is (re)built on `unlock()`, called from a user-gesture handler
  * in main.ts (autoplay policy). Every public method no-ops safely before
@@ -30,9 +67,21 @@ export class AudioManager {
 
   // engine
   private engineOsc: OscillatorNode | null = null;
+  private engineDetuneOsc: OscillatorNode | null = null;
   private engineSubOsc: OscillatorNode | null = null;
   private engineFilter: BiquadFilterNode | null = null;
   private engineGain: GainNode | null = null;
+  private vibratoOsc: OscillatorNode | null = null;
+  private vibratoGain: GainNode | null = null;
+  private engineRpm = 0.22; // smoothed virtual-gear RPM (0..1), starts at idle
+  private lastGear = 1;
+  private lastShiftAt = -Infinity;
+  private lastEngineUpdateAt: number | null = null;
+
+  // wind
+  private windSource: AudioBufferSourceNode | null = null;
+  private windFilter: BiquadFilterNode | null = null;
+  private windGain: GainNode | null = null;
 
   // crowd bed
   private crowdSource: AudioBufferSourceNode | null = null;
@@ -60,6 +109,7 @@ export class AudioManager {
     this.master.connect(ctx.destination);
 
     this.buildEngine();
+    this.buildWind();
     this.buildCrowd();
 
     (window as unknown as { __audioDebug?: () => { state: string; muted: boolean } }).__audioDebug = () => ({
@@ -71,32 +121,79 @@ export class AudioManager {
   private buildEngine(): void {
     const ctx = this.ctx!;
     const gain = ctx.createGain();
-    gain.gain.value = 0.08;
+    gain.gain.value = 0.07;
 
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.value = 400;
+    filter.frequency.value = 350;
 
     const osc = ctx.createOscillator();
     osc.type = 'sawtooth';
-    osc.frequency.value = 80;
+    osc.frequency.value = 55 + 0.22 * 210;
+
+    // Second, slightly detuned saw layered on the main osc for thickness.
+    const detuneOsc = ctx.createOscillator();
+    detuneOsc.type = 'sawtooth';
+    detuneOsc.frequency.value = osc.frequency.value + 6;
 
     const sub = ctx.createOscillator();
     sub.type = 'square';
-    sub.frequency.value = 40;
+    sub.frequency.value = (55 + 0.22 * 210) / 2;
+
+    // Gentle vibrato LFO modulating the main osc's frequency.
+    const vibratoOsc = ctx.createOscillator();
+    vibratoOsc.type = 'sine';
+    vibratoOsc.frequency.value = 4.5;
+    const vibratoGain = ctx.createGain();
+    vibratoGain.gain.value = 2.5; // +/- 2.5 Hz depth
+    vibratoOsc.connect(vibratoGain);
+    vibratoGain.connect(osc.frequency);
+    vibratoGain.connect(detuneOsc.frequency);
 
     osc.connect(filter);
+    detuneOsc.connect(filter);
     sub.connect(filter);
     filter.connect(gain);
     gain.connect(this.master!);
 
     osc.start();
+    detuneOsc.start();
     sub.start();
+    vibratoOsc.start();
 
     this.engineOsc = osc;
+    this.engineDetuneOsc = detuneOsc;
     this.engineSubOsc = sub;
     this.engineFilter = filter;
     this.engineGain = gain;
+    this.vibratoOsc = vibratoOsc;
+    this.vibratoGain = vibratoGain;
+  }
+
+  private buildWind(): void {
+    const ctx = this.ctx!;
+    const buffer = renderWhiteNoise(ctx, 2);
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 480;
+    filter.Q.value = 0.8;
+
+    const gain = ctx.createGain();
+    gain.gain.value = 0; // silent at rest
+
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.master!);
+    source.start();
+
+    this.windSource = source;
+    this.windFilter = filter;
+    this.windGain = gain;
   }
 
   private buildCrowd(): void {
@@ -125,17 +222,57 @@ export class AudioManager {
     this.nextCheerAt = ctx.currentTime + 3 + Math.random() * 4;
   }
 
-  /** Engine note per frame. speedRatio 0..1, turbo boosts pitch/gain. */
+  /**
+   * Engine note per frame. speedRatio 0..1, turbo boosts pitch/gain.
+   *
+   * Drives a virtual 5-gear RPM model (see `gearRpm`): rpm glides toward its
+   * per-gear target, and gear changes both dip the RPM (producing the
+   * audible climb-drop-climb "shift" sawtooth) and briefly duck the gain.
+   * Also updates the wind noise layer, which scales with speed only.
+   */
   engine(speedRatio: number, turbo: boolean): void {
-    if (!this.ctx || !this.engineOsc || !this.engineSubOsc || !this.engineFilter || !this.engineGain) return;
+    if (
+      !this.ctx ||
+      !this.engineOsc ||
+      !this.engineDetuneOsc ||
+      !this.engineSubOsc ||
+      !this.engineFilter ||
+      !this.engineGain
+    ) {
+      return;
+    }
     const r = clamp01(speedRatio);
     const boost = turbo ? 1.25 : 1;
     const t = this.ctx.currentTime;
-    const freq = (80 + r * (340 - 80)) * boost;
+
+    const { rpm: targetRpm, gear } = gearRpm(r);
+
+    if (gear !== this.lastGear) {
+      this.lastGear = gear;
+      this.lastShiftAt = t;
+    }
+    // Smooth the RPM toward its target at a ~6/s rate (frame-rate independent),
+    // so upshifts audibly dip before climbing again instead of snapping instantly.
+    const dt = this.lastEngineUpdateAt === null ? 1 / 60 : Math.max(0, Math.min(0.25, t - this.lastEngineUpdateAt));
+    this.lastEngineUpdateAt = t;
+    const rpmLerp = 1 - Math.exp(-6 * dt);
+    this.engineRpm += (targetRpm - this.engineRpm) * rpmLerp;
+
+    const rpm = this.engineRpm;
+    const freq = (55 + rpm * 210) * boost;
     this.engineOsc.frequency.setTargetAtTime(freq, t, 0.05);
+    this.engineDetuneOsc.frequency.setTargetAtTime(freq + 6, t, 0.05);
     this.engineSubOsc.frequency.setTargetAtTime(freq / 2, t, 0.05);
-    this.engineFilter.frequency.setTargetAtTime(400 + r * (2600 - 400), t, 0.05);
-    this.engineGain.gain.setTargetAtTime(0.08 + r * (0.16 - 0.08), t, 0.05);
+    this.engineFilter.frequency.setTargetAtTime(350 + rpm * 2600 + (turbo ? 600 : 0), t, 0.05);
+
+    const baseGain = 0.07 + rpm * (0.15 - 0.07);
+    const sinceShift = t - this.lastShiftAt;
+    const shiftDip = sinceShift < 0.12 ? 0.8 : 1; // -20% dip for ~120ms on gear change
+    this.engineGain.gain.setTargetAtTime(baseGain * shiftDip, t, 0.05);
+
+    if (this.windGain) {
+      this.windGain.gain.setTargetAtTime(0.05 * r * r, t, 0.1);
+    }
   }
 
   countdownBeep(final: boolean): void {
@@ -308,7 +445,10 @@ export class AudioManager {
   dispose(): void {
     try {
       this.engineOsc?.stop();
+      this.engineDetuneOsc?.stop();
       this.engineSubOsc?.stop();
+      this.vibratoOsc?.stop();
+      this.windSource?.stop();
       this.crowdSource?.stop();
     } catch {
       /* already stopped */
@@ -319,9 +459,15 @@ export class AudioManager {
       /* already disconnected */
     }
     this.engineOsc = null;
+    this.engineDetuneOsc = null;
     this.engineSubOsc = null;
     this.engineFilter = null;
     this.engineGain = null;
+    this.vibratoOsc = null;
+    this.vibratoGain = null;
+    this.windSource = null;
+    this.windFilter = null;
+    this.windGain = null;
     this.crowdSource = null;
     this.crowdFilter = null;
     this.crowdGain = null;
