@@ -7,12 +7,24 @@ import { AudioManager } from './audio';
 import { ChaseCamera } from './camera';
 import { instantiateCar } from './cars';
 import { Input } from './input';
-import { CAR_HALF, createLocalCar, createRemoteCar, createWorld, driveCar, freezeCar, initRapier, isDrifting, MAX_SPEED } from './physics';
+import {
+  CAR_HALF,
+  createLocalCar,
+  createRemoteCar,
+  createWorld,
+  driveCar,
+  DRIFT_ENTER_STEER,
+  DRIFT_EXIT_STEER,
+  DRIFT_SPEED_THRESHOLD,
+  freezeCar,
+  initRapier,
+  MAX_SPEED,
+} from './physics';
 import { CheckpointTracker } from './raceLogic';
 import { createScene, SceneCtx } from './scene';
 import { buildTrack, curve, gridPose, ROAD_WIDTH, TrackData } from './track';
 import { findTiltTarget, findWheels, prepareWheels, Wheels } from './cars';
-import { ParticleSystem } from './effects';
+import { Effects } from './effects';
 import { buildPickups, Pickups, slipstreamTarget } from './pickups';
 import { buildSpectators, Spectators } from './spectators';
 
@@ -22,9 +34,9 @@ const CP_RADIUS = ROAD_WIDTH * 0.75;
 const COLLISION_DROP_THRESHOLD = 6; // m/s
 const COLLISION_DROP_RANGE = 12; // m/s, maps drop above threshold to intensity 0..1
 const WHEEL_RADIUS = 0.34; // m, approx across all car models
-const STEER_WHEEL_MAX = 0.45; // rad, front wheel yaw at full steer
+const STEER_WHEEL_MAX = 0.45; // rad, front wheel yaw at full steer (parked); scaled down with speed
 const TILT_LERP = 8; // 1/s
-const TILT_ROLL_MAX = 0.09; // rad
+const TILT_ROLL_MAX = 0.045; // rad
 const TILT_PITCH_MAX = 0.06; // rad
 
 /** Per-car visual animation state: wheel spin/steer, body tilt, smoothed accel estimates. */
@@ -72,6 +84,9 @@ const FLAME_VEL = new THREE.Vector3();
 const REMOTE_DELTA = new THREE.Vector3();
 const REMOTE_FWD = new THREE.Vector3();
 const OWN_FWD_SCRATCH = new THREE.Vector3();
+const CAM_VEL_SCRATCH = new THREE.Vector3();
+const DRIFT_FWD_SCRATCH = new THREE.Vector3();
+const DRIFT_VEL_SCRATCH = new THREE.Vector3();
 
 const TURBO_DURATION_MS = 2500;
 const TURBO_MAX_CHARGES = 2;
@@ -127,7 +142,7 @@ export class Game {
   private renderPos = new THREE.Vector3();
   private renderQuat = new THREE.Quaternion();
   private myAnim!: CarAnim;
-  readonly effects = new ParticleSystem();
+  readonly effects = new Effects();
   private pickups!: Pickups;
   private spectators!: Spectators;
   private readonly carPosScratch: THREE.Vector3[] = [];
@@ -136,6 +151,8 @@ export class Game {
   private slipBonus = 0;
   private prevTurboActive = false;
   private readonly slipScratch: THREE.Vector3[] = [];
+  /** Hysteresis-owned drift state for the LOCAL car — single source of truth for both physics grip/oversteer and smoke/camera visuals. */
+  private drifting = false;
 
   private get turboActive(): boolean {
     return performance.now() < this.turboUntil;
@@ -169,7 +186,8 @@ export class Game {
     }
     game.hud.initMinimap(mapPts);
     game.hud.onMuteClick = () => game.hud.setMuted(game.audio.toggleMuted());
-    game.ctx.scene.add(game.effects.points);
+    game.ctx.scene.add(game.effects.smoke.points);
+    game.ctx.scene.add(game.effects.flame.points);
     game.pickups = buildPickups(game.ctx.scene, curve);
     game.spectators = buildSpectators(curve);
     game.ctx.scene.add(game.spectators.group);
@@ -260,7 +278,8 @@ export class Game {
     this.hud.hide();
     this.hud.dispose();
     this.audio.dispose();
-    this.ctx.scene.remove(this.effects.points);
+    this.ctx.scene.remove(this.effects.smoke.points);
+    this.ctx.scene.remove(this.effects.flame.points);
     this.effects.dispose();
     for (const mesh of this.pickups.meshes) this.ctx.scene.remove(mesh);
     this.pickups.meshes[0]?.geometry.dispose();
@@ -294,7 +313,27 @@ export class Game {
   private fixedStep(): void {
     this.input.update(FIXED_DT);
     if (this.phase === 'racing') {
-      driveCar(this.myBody, this.input, FIXED_DT, { turbo: this.turboActive, slipBonus: this.slipBonus });
+      // Drift hysteresis: compute the CURRENT forward speed from the body's pre-step state (same
+      // pattern driveCar uses internally) so the enter/exit decision reflects reality, not last frame.
+      // Enter at |steer| > DRIFT_ENTER_STEER (see isDrifting/handbrake); exit only once handbrake is
+      // released AND either steer has come back under DRIFT_EXIT_STEER or speed has dropped off —
+      // this hysteresis band is what stops the drift flag flickering right at the boundary.
+      const r = this.myBody.rotation();
+      DRIFT_FWD_SCRATCH.set(0, 0, -1).applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w));
+      DRIFT_FWD_SCRATCH.y = 0;
+      DRIFT_FWD_SCRATCH.normalize();
+      const lv0 = this.myBody.linvel();
+      DRIFT_VEL_SCRATCH.set(lv0.x, 0, lv0.z);
+      const fwdSpeedNow = DRIFT_VEL_SCRATCH.dot(DRIFT_FWD_SCRATCH);
+      const absSteer = Math.abs(this.input.steer);
+      if (!this.drifting) {
+        this.drifting =
+          this.input.handbrake || (absSteer > DRIFT_ENTER_STEER && Math.abs(fwdSpeedNow) > DRIFT_SPEED_THRESHOLD);
+      } else if (!this.input.handbrake && (absSteer < DRIFT_EXIT_STEER || Math.abs(fwdSpeedNow) < 12)) {
+        this.drifting = false;
+      }
+
+      driveCar(this.myBody, this.input, FIXED_DT, { turbo: this.turboActive, slipBonus: this.slipBonus, drifting: this.drifting });
       this.updateTurbo();
     } else {
       freezeCar(this.myBody);
@@ -383,7 +422,9 @@ export class Game {
     if (wheels.fr) wheels.fr.rotation.x += spinDelta;
     if (wheels.bl) wheels.bl.rotation.x += spinDelta;
     if (wheels.br) wheels.br.rotation.x += spinDelta;
-    const steerY = this.input.steer * STEER_WHEEL_MAX;
+    // Speed-sensitive steering visual: full lock (~26°) when parked, tapering to ~10° at MAX_SPEED —
+    // matches how a real car's front wheels appear to turn less sharply at speed.
+    const steerY = this.input.steer * STEER_WHEEL_MAX * (1 - 0.6 * Math.min(1, horizSpeed / MAX_SPEED));
     if (steer.left) steer.left.rotation.y = steerY;
     if (steer.right) steer.right.rotation.y = steerY;
 
@@ -393,7 +434,9 @@ export class Game {
     const longAccel = (fwdSpeed - anim.fwdSpeed) / dt;
     anim.fwdSpeed = fwdSpeed;
     anim.prevHorizVel.set(lv.x, 0, lv.z);
-    const targetRoll = THREE.MathUtils.clamp(-lateralAccel * 0.02, -TILT_ROLL_MAX, TILT_ROLL_MAX);
+    // Body leans AWAY from the corner center (outward), like a real car under lateral G — verified
+    // empirically with a temporary probe during development (see commit history for the readings).
+    const targetRoll = THREE.MathUtils.clamp(-lateralAccel * 0.01, -TILT_ROLL_MAX, TILT_ROLL_MAX);
     const targetPitch = THREE.MathUtils.clamp(longAccel * 0.012, -TILT_PITCH_MAX, TILT_PITCH_MAX);
     const tiltAlpha = Math.min(1, TILT_LERP * dt);
     anim.roll += (targetRoll - anim.roll) * tiltAlpha;
@@ -403,15 +446,19 @@ export class Game {
       tilt.rotation.x = anim.pitch;
     }
 
-    // drift smoke: own car, handbrake or hard-cornering-at-speed, moving reasonably fast
-    const drifting = isDrifting(this.input.steer, this.input.handbrake, fwdSpeed) && horizSpeed > 8;
-    if (drifting) {
+    // drift smoke: own car, using the same hysteresis flag that drives the physics grip/oversteer,
+    // so the visual slide and the actual physics slide are always the same source of truth.
+    if (this.drifting && horizSpeed > 8) {
       for (const w of [wheels.bl, wheels.br]) {
         if (!w) continue;
-        w.getWorldPosition(SMOKE_POS);
-        SMOKE_VEL.set((Math.random() - 0.5) * 0.6, 1.2 + Math.random() * 0.6, (Math.random() - 0.5) * 0.6);
-        SMOKE_VEL.addScaledVector(VEL_SCRATCH.set(lv.x, 0, lv.z), 0.3);
-        this.effects.spawn(SMOKE_POS, SMOKE_VEL, 0.7, 0.9, 0x888888);
+        for (let i = 0; i < 3; i++) {
+          w.getWorldPosition(SMOKE_POS);
+          SMOKE_POS.y = 0.1;
+          SMOKE_VEL.set((Math.random() - 0.5) * 1.0, 0.4 + Math.random() * 0.6, (Math.random() - 0.5) * 1.0);
+          SMOKE_VEL.addScaledVector(VEL_SCRATCH.set(lv.x, 0, lv.z), 0.4);
+          const life = 0.9 + Math.random() * 0.4;
+          this.effects.spawnSmoke(SMOKE_POS, SMOKE_VEL, life);
+        }
       }
       const nowMs = performance.now();
       if (nowMs - this.lastScreechAt > 180) {
@@ -432,7 +479,7 @@ export class Game {
       FLAME_VEL.copy(fwd).multiplyScalar(-(4 + Math.random() * 3));
       FLAME_VEL.y += Math.random() * 1.5;
       const color = Math.random() < 0.5 ? 0xff7722 : 0xffcc44;
-      this.effects.spawn(FLAME_POS, FLAME_VEL, 0.25, 0.6, color);
+      this.effects.flame.spawn(FLAME_POS, FLAME_VEL, 0.25, 0.6, color);
     }
   }
 
@@ -555,7 +602,8 @@ export class Game {
       { x: this.renderPos.x, z: this.renderPos.z },
       [...this.remotes.values()].map((r) => ({ x: r.mesh.position.x, z: r.mesh.position.z })),
     );
-    this.chase.update(this.renderPos, this.renderQuat, speed, dt, this.turboActive);
+    CAM_VEL_SCRATCH.set(lv.x, lv.y, lv.z);
+    this.chase.update(this.renderPos, this.renderQuat, CAM_VEL_SCRATCH, speed, this.input.steer, dt, this.turboActive, this.drifting);
     this.audio.engine(speed / MAX_SPEED, this.turboActive);
     // crowd proximity is owned here (game.ts): nearest-stand distance from the own car,
     // rather than inside AudioManager, since Game already tracks car/stand world positions.
@@ -605,4 +653,3 @@ function horizDist(a: THREE.Vector3, b: THREE.Vector3): number {
   const dz = a.z - b.z;
   return Math.hypot(dx, dz);
 }
-

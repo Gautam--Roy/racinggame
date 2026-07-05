@@ -11,13 +11,16 @@ const REVERSE_ACCEL = 10;
 const MAX_REVERSE = 9;
 const TURN_RATE = 2.3; // rad/s at full steer
 const GRIP = 9; // lateral velocity kill rate
-const GRIP_HANDBRAKE = 2.2;
-const DRIFT_STEER_THRESHOLD = 0.65;
-const DRIFT_SPEED_THRESHOLD = 18; // m/s
+const GRIP_HANDBRAKE = 1.1;
+const GRIP_DRIFT_CORNER = GRIP * 0.22; // ≈2.0 — loose cornering grip while drifting
+export const DRIFT_ENTER_STEER = 0.65;
+export const DRIFT_EXIT_STEER = 0.45;
+export const DRIFT_SPEED_THRESHOLD = 18; // m/s
+const DRIFT_OVERSTEER_MULT = 1.3; // extra yaw rate while drifting, simulates the rear stepping out
 
-/** True when the car should be sliding: handbrake pulled, or steering hard at speed. */
+/** True when the car should be sliding: handbrake pulled, or steering hard at speed. Stateless "enter" test — callers owning hysteresis (game.ts) should track their own drifting flag rather than calling this every frame for the exit decision. */
 export function isDrifting(steer: number, handbrake: boolean, fwdSpeed: number): boolean {
-  return handbrake || (Math.abs(steer) > DRIFT_STEER_THRESHOLD && Math.abs(fwdSpeed) > DRIFT_SPEED_THRESHOLD);
+  return handbrake || (Math.abs(steer) > DRIFT_ENTER_STEER && Math.abs(fwdSpeed) > DRIFT_SPEED_THRESHOLD);
 }
 
 let initialized = false;
@@ -78,9 +81,11 @@ const Q = new THREE.Quaternion();
 export interface DriveOpts {
   turbo: boolean;
   slipBonus: number;
+  /** Caller-owned hysteresis flag (see game.ts) — true while the car should behave as drifting (loose cornering grip + oversteer yaw boost). */
+  drifting: boolean;
 }
 
-const DEFAULT_DRIVE_OPTS: DriveOpts = { turbo: false, slipBonus: 0 };
+const DEFAULT_DRIVE_OPTS: DriveOpts = { turbo: false, slipBonus: 0, drifting: false };
 
 /** Arcade controller: read velocity, apply engine/brake/grip, write back. Collisions still shove the car because Rapier's solver adjusts velocity during the step and we re-read it next step. */
 export function driveCar(body: RAPIER.RigidBody, input: Input, dt: number, opts: DriveOpts = DEFAULT_DRIVE_OPTS): void {
@@ -102,17 +107,14 @@ export function driveCar(body: RAPIER.RigidBody, input: Input, dt: number, opts:
   VEL.addScaledVector(FWD, accel * dt);
 
   LAT.copy(VEL).addScaledVector(FWD, -VEL.dot(FWD)); // lateral component
-  const grip = isDrifting(input.steer, input.handbrake, fwdSpeed)
-    ? input.handbrake
-      ? GRIP_HANDBRAKE
-      : GRIP * 0.45
-    : GRIP;
+  const grip = opts.drifting ? (input.handbrake ? GRIP_HANDBRAKE : GRIP_DRIFT_CORNER) : GRIP;
   VEL.addScaledVector(LAT, -Math.min(1, grip * dt));
 
   body.setLinvel({ x: VEL.x, y: lv.y, z: VEL.z }, true);
 
   const speedFactor = THREE.MathUtils.clamp(Math.abs(fwdSpeed) / 11, 0, 1) * Math.sign(fwdSpeed || 1);
-  body.setAngvel({ x: 0, y: input.steer * TURN_RATE * speedFactor, z: 0 }, true);
+  const oversteer = opts.drifting ? DRIFT_OVERSTEER_MULT : 1;
+  body.setAngvel({ x: 0, y: input.steer * TURN_RATE * speedFactor * oversteer, z: 0 }, true);
 }
 
 export function freezeCar(body: RAPIER.RigidBody): void {
