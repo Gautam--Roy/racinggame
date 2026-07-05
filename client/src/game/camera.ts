@@ -14,12 +14,16 @@ export class ChaseCamera {
   // Smoothed blended direction (car-forward mixed with velocity direction), persisted across frames
   // so quick steering flicks don't snap the camera's aim instantly.
   private readonly smoothedDir = new THREE.Vector3(0, 0, -1);
+  // Smoothed steer input, used for the lateral look-ahead and roll so a snap steering flick doesn't
+  // instantly whip the camera's aim/tilt -- it ramps in/out instead.
+  private smoothedSteer = 0;
 
   constructor(private readonly cam: THREE.PerspectiveCamera) {}
 
   snap(pos: THREE.Vector3, quat: THREE.Quaternion): void {
     fwd.set(0, 0, -1).applyQuaternion(quat).setY(0).normalize();
     this.smoothedDir.copy(fwd);
+    this.smoothedSteer = 0;
     this.place(pos, fwd, 7.5, 3.2, 0, 1);
   }
 
@@ -39,22 +43,28 @@ export class ChaseCamera {
     else velDir.copy(fwd);
 
     // Above ~6 m/s, blend the camera's aim toward the actual velocity direction so drifting/sliding
-    // reads visually (car pointed one way, moving another).
-    const mix = speed > 6 ? THREE.MathUtils.clamp((speed - 6) / 10, 0, 0.65) : 0;
+    // reads visually (car pointed one way, moving another). Capped at 0.45 (one continuous cap,
+    // no separate drifting step) so the aim doesn't snap when the drift flag flips.
+    const mix = speed > 6 ? THREE.MathUtils.clamp((speed - 6) / 10, 0, 0.45) : 0;
     void drifting; // currently the velocity-facing blend alone is enough to make drift visible; reserved for future tuning
     blended.copy(fwd).multiplyScalar(1 - mix).addScaledVector(velDir, mix);
     if (blended.lengthSq() > 1e-8) blended.normalize();
     else blended.copy(fwd);
 
     // Smooth the blended direction itself (not just camera position) to avoid snapping on quick flicks.
-    const dirAlpha = 1 - Math.exp(-3 * dt);
+    const dirAlpha = 1 - Math.exp(-4 * dt);
     this.smoothedDir.lerp(blended, dirAlpha).normalize();
+
+    // Smooth the steer input used for look-ahead/roll so a quick steering flick ramps the camera's
+    // reaction in rather than snapping it instantly.
+    const steerAlpha = 1 - Math.exp(-2.5 * dt);
+    this.smoothedSteer += (steer - this.smoothedSteer) * steerAlpha;
 
     const speedRatio = THREE.MathUtils.clamp(speed / MAX_SPEED, 0, 1);
     const back = 7.5 + 2.5 * speedRatio;
     const height = 3.2 + 0.6 * speedRatio;
     const posAlpha = 1 - Math.exp(-6 * dt);
-    this.place(pos, this.smoothedDir, back, height, steer, posAlpha);
+    this.place(pos, this.smoothedDir, back, height, this.smoothedSteer, posAlpha);
 
     const targetFov = 68 + 14 * speedRatio;
     if (Math.abs(this.cam.fov - targetFov) > 0.1) {
@@ -64,7 +74,7 @@ export class ChaseCamera {
 
     // render-only shake, only kicks in above 60% of top speed; not part of deterministic physics
     const shakeRatio = speedRatio > 0.6 ? Math.pow((speedRatio - 0.6) / 0.4, 2) : 0;
-    const amount = 0.05 * shakeRatio * (turbo ? 1.5 : 1);
+    const amount = 0.035 * shakeRatio * (turbo ? 1.5 : 1);
     shake.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(amount);
     this.cam.position.add(shake);
   }
@@ -77,10 +87,10 @@ export class ChaseCamera {
     lookAt.copy(pos).addScaledVector(dir, 5).setY(pos.y + 1.2);
     // Lateral look-ahead shift toward the inside/outside of the turn based on steer input.
     right.crossVectors(dir, UP).normalize();
-    lookAt.addScaledVector(right, steer * -2.2);
+    lookAt.addScaledVector(right, steer * -1.4);
     this.cam.lookAt(lookAt);
 
     // lookAt() resets rotation (including .z), so subtle roll must be applied after.
-    this.cam.rotation.z += THREE.MathUtils.clamp(-steer * 0.03, -0.03, 0.03);
+    this.cam.rotation.z += THREE.MathUtils.clamp(-steer * 0.018, -0.018, 0.018);
   }
 }
