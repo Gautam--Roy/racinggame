@@ -1,6 +1,8 @@
 import {
   CAR_MODELS,
   CarModel,
+  DEFAULT_LAPS,
+  MAX_LAPS,
   MAX_PLAYERS,
   PlayerInfo,
   Progress,
@@ -17,6 +19,7 @@ export class Room {
   players: Player[] = [];
   finishes = new Map<string, number>();
   progress = new Map<string, Progress>();
+  laps = DEFAULT_LAPS;
 
   constructor(public readonly code: string) {}
 
@@ -54,6 +57,14 @@ export class Room {
     if (this.phase !== 'lobby') return false;
     if (!this.players.find((p) => p.id === byId)?.isHost) return false;
     this.phase = 'racing';
+    return true;
+  }
+
+  setLaps(byId: string, laps: number): boolean {
+    if (this.phase !== 'lobby') return false;
+    if (!this.players.find((p) => p.id === byId)?.isHost) return false;
+    if (!Number.isInteger(laps) || laps < 1 || laps > MAX_LAPS) return false;
+    this.laps = laps;
     return true;
   }
 

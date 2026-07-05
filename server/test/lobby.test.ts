@@ -142,6 +142,60 @@ describe('Room results', () => {
   });
 });
 
+describe('Room.setLaps', () => {
+  it('defaults to 2 laps', () => {
+    const lm = new LobbyManager();
+    const room = lm.create('p1', 'A');
+    expect(room.laps).toBe(2);
+  });
+
+  it('host can set laps within 1..9', () => {
+    const lm = new LobbyManager();
+    const room = lm.create('p1', 'A');
+    expect(room.setLaps('p1', 5)).toBe(true);
+    expect(room.laps).toBe(5);
+    expect(room.setLaps('p1', 1)).toBe(true);
+    expect(room.laps).toBe(1);
+    expect(room.setLaps('p1', 9)).toBe(true);
+    expect(room.laps).toBe(9);
+  });
+
+  it('rejects non-host attempts', () => {
+    const lm = new LobbyManager();
+    const room = lm.create('p1', 'A');
+    lm.join(room.code, 'p2', 'B');
+    expect(room.setLaps('p2', 4)).toBe(false);
+    expect(room.laps).toBe(2);
+  });
+
+  it('rejects non-integer, zero, and out-of-range values', () => {
+    const lm = new LobbyManager();
+    const room = lm.create('p1', 'A');
+    expect(room.setLaps('p1', 0)).toBe(false);
+    expect(room.setLaps('p1', 10)).toBe(false);
+    expect(room.setLaps('p1', 2.5)).toBe(false);
+    expect(room.setLaps('p1', -1)).toBe(false);
+    expect(room.laps).toBe(2);
+  });
+
+  it('rejects changes once racing has started', () => {
+    const lm = new LobbyManager();
+    const room = lm.create('p1', 'A');
+    room.start('p1');
+    expect(room.setLaps('p1', 5)).toBe(false);
+    expect(room.laps).toBe(2);
+  });
+
+  it('persists the host-chosen lap count through resetToLobby (rematch)', () => {
+    const lm = new LobbyManager();
+    const room = lm.create('p1', 'A');
+    expect(room.setLaps('p1', 7)).toBe(true);
+    room.start('p1');
+    room.resetToLobby();
+    expect(room.laps).toBe(7);
+  });
+});
+
 describe('progressScore', () => {
   it('a passed checkpoint always outranks any distance advantage', () => {
     expect(progressScore({ passed: 1, dist: 9999 })).toBeGreaterThan(progressScore({ passed: 0, dist: 0 }));

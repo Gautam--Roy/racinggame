@@ -1,4 +1,4 @@
-import { PlayerInfo, ServerMsg } from '../../shared/src/protocol';
+import { DEFAULT_LAPS, PlayerInfo, ServerMsg } from '../../shared/src/protocol';
 import { preloadCars } from './game/cars';
 import { Game } from './game/game';
 import { GameSocket } from './net/socket';
@@ -10,6 +10,7 @@ let socket: GameSocket | null = null;
 let selfId = '';
 let roomCode = '';
 let players: PlayerInfo[] = [];
+let laps = DEFAULT_LAPS;
 let game: Game | null = null;
 
 function connect(): Promise<GameSocket> {
@@ -33,13 +34,15 @@ function onMessage(msg: ServerMsg): void {
       selfId = msg.selfId;
       roomCode = msg.code;
       players = msg.players;
-      screens.renderLobby(roomCode, players, selfId);
+      laps = msg.laps;
+      screens.renderLobby(roomCode, players, selfId, laps);
       screens.show('lobby');
       preloadCars().catch(() => {}); // warm all car models during lobby; missing models fall back per-car
       break;
     case 'lobby':
       players = msg.players;
-      if (!game) screens.renderLobby(roomCode, players, selfId);
+      laps = msg.laps;
+      if (!game) screens.renderLobby(roomCode, players, selfId, laps);
       break;
     case 'countdown': {
       const racers = players;
@@ -48,7 +51,7 @@ function onMessage(msg: ServerMsg): void {
       screens.show('none');
       // state frames arriving before Game.create() resolves are dropped (game is null);
       // benign — cars spawn at their grid pose and 120ms interpolation absorbs the gap.
-      Game.create(canvas, selfId, racers, msg.grid, {
+      Game.create(canvas, selfId, racers, msg.grid, msg.laps, {
         sendState: (state) => socket?.send({ type: 'state', state }),
         sendFinished: (timeMs) => socket?.send({ type: 'finished', timeMs }),
         sendHorn: () => socket?.send({ type: 'horn' }),
@@ -88,9 +91,10 @@ screens.onCreate = (name) =>
 screens.onJoin = (code, name) =>
   connect().then((s) => s.send({ type: 'join', code, name })).catch((e) => screens.showError(e.message));
 screens.onPickCar = (car) => socket?.send({ type: 'pickCar', car });
+screens.onSetLaps = (n) => socket?.send({ type: 'setLaps', laps: n });
 screens.onStart = () => socket?.send({ type: 'start' });
 screens.onBack = () => {
-  screens.renderLobby(roomCode, players, selfId);
+  screens.renderLobby(roomCode, players, selfId, laps);
   screens.show('lobby');
 };
 
@@ -99,7 +103,7 @@ if (location.search.includes('practice')) {
   screens.show('none');
   preloadCars(['race'])
     .then(() =>
-      Game.create(canvas, 'solo', [me], { solo: 0 }, {
+      Game.create(canvas, 'solo', [me], { solo: 0 }, DEFAULT_LAPS, {
         sendState: () => {},
         sendFinished: () => {},
         sendHorn: () => {},
