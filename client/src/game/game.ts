@@ -39,6 +39,15 @@ const TILT_LERP = 8; // 1/s
 const TILT_ROLL_MAX = 0.045; // rad
 const TILT_PITCH_MAX = 0.06; // rad
 
+// F1-style start lights: emissive colors per phase, GO hold duration before dimming to off.
+const LIGHT_RED = 0xff2211;
+const LIGHT_YELLOW = 0xffaa00;
+const LIGHT_GREEN = 0x22ff44;
+const LIGHT_OFF_EMISSIVE = 0x000000;
+const LIGHT_OFF_COLOR = 0x220000;
+const LIGHT_ON_INTENSITY = 2;
+const GO_HOLD_MS = 1200;
+
 /** Per-car visual animation state: wheel spin/steer, body tilt, smoothed accel estimates. */
 interface CarAnim {
   wheels: Wheels;
@@ -237,7 +246,9 @@ export class Game {
         this.lapStart = this.goTime;
         this.hud.setCountdown('GO!');
         this.audio.countdownBeep(true);
+        this.setStartLights('green');
         this.countdownTimer = setTimeout(() => this.hud.setCountdown(null), 800);
+        setTimeout(() => this.setStartLights('off'), GO_HOLD_MS);
       } else {
         const text = `${Math.ceil(left / 1000)}`;
         this.hud.setCountdown(text);
@@ -245,12 +256,32 @@ export class Game {
           this.lastCountdownText = text;
           this.audio.countdownBeep(false);
         }
+        // Map remaining time to a 3-2-1 light phase using the FRACTION of countdownMs elapsed,
+        // so this works for both the 3s multiplayer countdown and the 1.5s practice countdown.
+        const phase = Math.ceil((left / countdownMs) * 3);
+        this.setStartLights(phase >= 3 ? 'red' : 'yellow');
         this.countdownTimer = setTimeout(tick, 100);
       }
     };
     tick();
     this.lastTime = performance.now();
     this.raf = requestAnimationFrame(this.loop);
+  }
+
+  /** Drives the F1-style start-light rig exposed by TrackData. All 5 discs share a phase. */
+  private setStartLights(phase: 'red' | 'yellow' | 'green' | 'off'): void {
+    const lights = this.track.startLights;
+    let emissive = LIGHT_OFF_EMISSIVE;
+    let intensity = 0;
+    if (phase === 'red') emissive = LIGHT_RED;
+    else if (phase === 'yellow') emissive = LIGHT_YELLOW;
+    else if (phase === 'green') emissive = LIGHT_GREEN;
+    if (phase !== 'off') intensity = LIGHT_ON_INTENSITY;
+    for (const mat of lights) {
+      mat.emissive.setHex(emissive);
+      mat.emissiveIntensity = intensity;
+      mat.color.setHex(phase === 'off' ? LIGHT_OFF_COLOR : LIGHT_OFF_COLOR);
+    }
   }
 
   onRemoteState(id: string, state: CarState): void {
@@ -274,6 +305,7 @@ export class Game {
     if (this.countdownTimer) clearTimeout(this.countdownTimer);
     this.phase = 'done';
     cancelAnimationFrame(this.raf);
+    this.setStartLights('off');
     this.input.dispose();
     this.hud.hide();
     this.hud.dispose();
