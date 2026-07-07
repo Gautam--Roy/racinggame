@@ -25,21 +25,32 @@ function ensureContext(): AudioContext | null {
  * in main.ts (autoplay policy). Every public method no-ops safely before
  * unlock so callers never need to guard.
  */
+// Sample-driven engine tuning. playbackRate maps rpm (0..1) onto this range --
+// tuned so idle sounds idle and redline sounds urgent without chipmunking.
+const ENGINE_RATE_BASE = 0.55;
+const ENGINE_RATE_SPAN = 1.1;
+const ENGINE_TURBO_BOOST = 1.18;
+// Equal-power crossfade band between the low-RPM and high-RPM loops.
+const CROSSFADE_LO = 0.45;
+const CROSSFADE_HI = 0.75;
+// Post-shift rev-match blip: momentary playbackRate bump -- a "nice rev-match effect" tied to the
+// real gear-catch moment (GearState.blip) instead of a constant LFO.
+const BLIP_RATE_BOOST = 0.04;
+
 export class AudioManager {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
 
-  // engine
-  private engineOsc: OscillatorNode | null = null;
-  private engineDetuneOsc: OscillatorNode | null = null;
-  private engineSubOsc: OscillatorNode | null = null;
+  // engine (sample-based: two pitch-graded loops crossfaded by rpm)
+  private engineLowBuffer: AudioBuffer | null = null;
+  private engineHighBuffer: AudioBuffer | null = null;
+  private engineLowSource: AudioBufferSourceNode | null = null;
+  private engineHighSource: AudioBufferSourceNode | null = null;
+  private engineLowGain: GainNode | null = null;
+  private engineHighGain: GainNode | null = null;
   private engineFilter: BiquadFilterNode | null = null;
   private engineGain: GainNode | null = null;
-  private vibratoOsc: OscillatorNode | null = null;
-  private vibratoGain: GainNode | null = null;
-  private roughnessSource: AudioBufferSourceNode | null = null;
-  private roughnessFilter: BiquadFilterNode | null = null;
-  private roughnessGain: GainNode | null = null;
+  private engineBuffersLoaded = false;
 
   // wind
   private windSource: AudioBufferSourceNode | null = null;
@@ -74,89 +85,99 @@ export class AudioManager {
     this.buildEngine();
     this.buildWind();
     this.buildCrowd();
+    void this.loadEngineBuffers();
 
-    (window as unknown as { __audioDebug?: () => { state: string; muted: boolean } }).__audioDebug = () => ({
+    (window as unknown as {
+      __audioDebug?: () => {
+        state: string;
+        muted: boolean;
+        engineMode: 'sample' | 'synth';
+        buffersLoaded: boolean;
+      };
+    }).__audioDebug = () => ({
       state: this.ctx?.state ?? 'closed',
       muted: this.muted,
+      engineMode: 'sample',
+      buffersLoaded: this.engineBuffersLoaded,
     });
+  }
+
+  /**
+   * Fetch + decode the two sample-based engine loops (same-origin /audio/...), lazily, once per
+   * shared AudioContext lifetime. Every engine() call no-ops safely until this resolves — brief
+   * silence on the very first unlock() is fine, per spec.
+   */
+  private async loadEngineBuffers(): Promise<void> {
+    const ctx = this.ctx;
+    if (!ctx || this.engineBuffersLoaded) return;
+    try {
+      const [lowRes, highRes] = await Promise.all([
+        fetch('/audio/engine-low.ogg'),
+        fetch('/audio/engine-high.ogg'),
+      ]);
+      const [lowBuf, highBuf] = await Promise.all([lowRes.arrayBuffer(), highRes.arrayBuffer()]);
+      const [lowDecoded, highDecoded] = await Promise.all([
+        ctx.decodeAudioData(lowBuf),
+        ctx.decodeAudioData(highBuf),
+      ]);
+      // ctx/dispose() may have run while the fetch/decode was in flight.
+      if (!this.ctx || this.ctx !== ctx) return;
+      this.engineLowBuffer = lowDecoded;
+      this.engineHighBuffer = highDecoded;
+      this.startEngineSources();
+      this.engineBuffersLoaded = true;
+    } catch {
+      /* offline, blocked fetch, or unsupported codec — engine() stays silent, no crash */
+    }
   }
 
   private buildEngine(): void {
     const ctx = this.ctx!;
     const gain = ctx.createGain();
-    gain.gain.value = 0.07;
+    gain.gain.value = 0.5;
 
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.frequency.value = 350;
 
-    const osc = ctx.createOscillator();
-    osc.type = 'sawtooth';
-    osc.frequency.value = 55 + 0.22 * 210;
+    const lowGain = ctx.createGain();
+    lowGain.gain.value = 1; // equal-power crossfade weights, set per-frame in engine()
+    const highGain = ctx.createGain();
+    highGain.gain.value = 0;
 
-    // Second saw layered on the main osc for thickness, detuned by a constant
-    // MUSICAL ratio (not a fixed Hz offset) so the beat interval scales with
-    // pitch instead of beating horribly at low RPM (fixed +6Hz against a
-    // ~100Hz fundamental is a wide, ugly ~6% detune; against a ~250Hz
-    // fundamental near redline it's a tight, barely-there ~2.4% detune —
-    // that inconsistency was the main source of the "weird" engine sound).
-    const detuneOsc = ctx.createOscillator();
-    detuneOsc.type = 'sawtooth';
-    detuneOsc.frequency.value = osc.frequency.value * 1.004;
-
-    const sub = ctx.createOscillator();
-    sub.type = 'square';
-    sub.frequency.value = (55 + 0.22 * 210) / 2;
-
-    // Gentle vibrato LFO modulating the main osc's frequency — subtle pitch
-    // texture, not a siren wobble.
-    const vibratoOsc = ctx.createOscillator();
-    vibratoOsc.type = 'sine';
-    vibratoOsc.frequency.value = 5.5;
-    const vibratoGain = ctx.createGain();
-    vibratoGain.gain.value = 0.8; // +/- 0.8 Hz depth
-    vibratoOsc.connect(vibratoGain);
-    vibratoGain.connect(osc.frequency);
-    vibratoGain.connect(detuneOsc.frequency);
-
-    // Very quiet engine-roughness noise layer: white noise through a bandpass
-    // tracking the fundamental's 2nd harmonic, giving combustion "grit"
-    // texture instead of the clean, synthetic buzz of bare saw waves alone.
-    const roughnessSource = ctx.createBufferSource();
-    roughnessSource.buffer = renderWhiteNoise(ctx, 2);
-    roughnessSource.loop = true;
-    const roughnessFilter = ctx.createBiquadFilter();
-    roughnessFilter.type = 'bandpass';
-    roughnessFilter.frequency.value = (55 + 0.22 * 210) * 2;
-    roughnessFilter.Q.value = 2;
-    const roughnessGain = ctx.createGain();
-    roughnessGain.gain.value = 0.012 + 0.02 * 0.22;
-
-    osc.connect(filter);
-    detuneOsc.connect(filter);
-    sub.connect(filter);
-    roughnessSource.connect(roughnessFilter);
-    roughnessFilter.connect(roughnessGain);
-    roughnessGain.connect(this.master!);
+    lowGain.connect(filter);
+    highGain.connect(filter);
     filter.connect(gain);
     gain.connect(this.master!);
 
-    osc.start();
-    detuneOsc.start();
-    sub.start();
-    vibratoOsc.start();
-    roughnessSource.start();
-
-    this.engineOsc = osc;
-    this.engineDetuneOsc = detuneOsc;
-    this.engineSubOsc = sub;
     this.engineFilter = filter;
     this.engineGain = gain;
-    this.vibratoOsc = vibratoOsc;
-    this.vibratoGain = vibratoGain;
-    this.roughnessSource = roughnessSource;
-    this.roughnessFilter = roughnessFilter;
-    this.roughnessGain = roughnessGain;
+    this.engineLowGain = lowGain;
+    this.engineHighGain = highGain;
+  }
+
+  /** Starts the two looping sample sources once buffers are decoded. Called once per unlock(). */
+  private startEngineSources(): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.engineLowBuffer || !this.engineHighBuffer || !this.engineLowGain || !this.engineHighGain) {
+      return;
+    }
+    const low = ctx.createBufferSource();
+    low.buffer = this.engineLowBuffer;
+    low.loop = true;
+    low.playbackRate.value = ENGINE_RATE_BASE;
+    low.connect(this.engineLowGain);
+    low.start();
+
+    const high = ctx.createBufferSource();
+    high.buffer = this.engineHighBuffer;
+    high.loop = true;
+    high.playbackRate.value = ENGINE_RATE_BASE;
+    high.connect(this.engineHighGain);
+    high.start();
+
+    this.engineLowSource = low;
+    this.engineHighSource = high;
   }
 
   private buildWind(): void {
@@ -218,37 +239,44 @@ export class AudioManager {
    * feel are always driven by the exact same rpm/gear/shiftDip, never two
    * independently-smoothed models drifting apart. turbo boosts pitch/gain.
    *
-   * No internal rpm smoothing here anymore: GearBox already smooths. Also
-   * updates the wind noise layer, which scales with speed only.
+   * Sample-driven: two pitch-graded engine loops (low/high RPM) crossfaded by
+   * rpm with an equal-power curve, both resampled via playbackRate to track
+   * rpm continuously within their band. No-ops safely until loadEngineBuffers()
+   * resolves (this.engineLowSource stays null) — brief silence on first
+   * unlock() is expected. Also updates the wind noise layer, which scales
+   * with speed only.
    */
   engine(gs: GearState, turbo: boolean): void {
     if (
       !this.ctx ||
-      !this.engineOsc ||
-      !this.engineDetuneOsc ||
-      !this.engineSubOsc ||
+      !this.engineLowSource ||
+      !this.engineHighSource ||
+      !this.engineLowGain ||
+      !this.engineHighGain ||
       !this.engineFilter ||
       !this.engineGain
     ) {
       return;
     }
-    const boost = turbo ? 1.25 : 1;
+    const boost = turbo ? ENGINE_TURBO_BOOST : 1;
     const t = this.ctx.currentTime;
 
     const rpm = clamp01(gs.rpm);
-    const freq = (55 + rpm * 210) * boost;
-    this.engineOsc.frequency.setTargetAtTime(freq, t, 0.05);
-    this.engineDetuneOsc.frequency.setTargetAtTime(freq * 1.004, t, 0.05);
-    this.engineSubOsc.frequency.setTargetAtTime(freq / 2, t, 0.05);
+    const blip = clamp01(gs.blip);
+    const rate = (ENGINE_RATE_BASE + rpm * ENGINE_RATE_SPAN) * boost * (1 + BLIP_RATE_BOOST * blip);
+    this.engineLowSource.playbackRate.setTargetAtTime(rate, t, 0.05);
+    this.engineHighSource.playbackRate.setTargetAtTime(rate, t, 0.05);
     this.engineFilter.frequency.setTargetAtTime(350 + rpm * 2600 + (turbo ? 600 : 0), t, 0.05);
-    if (this.roughnessFilter) {
-      this.roughnessFilter.frequency.setTargetAtTime(freq * 2, t, 0.05);
-    }
-    if (this.roughnessGain) {
-      this.roughnessGain.gain.setTargetAtTime(0.012 + 0.02 * rpm, t, 0.05);
-    }
 
-    const baseGain = 0.07 + rpm * (0.15 - 0.07);
+    // Equal-power crossfade: cos/sin pair so the combined perceived loudness stays roughly
+    // constant through the handoff instead of dipping (linear fade) or bulging (both at 1).
+    const x = clamp01((rpm - CROSSFADE_LO) / (CROSSFADE_HI - CROSSFADE_LO));
+    const lowWeight = Math.cos(x * (Math.PI / 2));
+    const highWeight = Math.sin(x * (Math.PI / 2));
+    this.engineLowGain.gain.setTargetAtTime(lowWeight, t, 0.05);
+    this.engineHighGain.gain.setTargetAtTime(highWeight, t, 0.05);
+
+    const baseGain = 0.5 + rpm * (0.85 - 0.5);
     const shiftDip = clamp01(gs.shiftDip);
     this.engineGain.gain.setTargetAtTime(baseGain * (1 - 0.35 * shiftDip), t, 0.05);
 
@@ -430,11 +458,8 @@ export class AudioManager {
    */
   dispose(): void {
     try {
-      this.engineOsc?.stop();
-      this.engineDetuneOsc?.stop();
-      this.engineSubOsc?.stop();
-      this.vibratoOsc?.stop();
-      this.roughnessSource?.stop();
+      this.engineLowSource?.stop();
+      this.engineHighSource?.stop();
       this.windSource?.stop();
       this.crowdSource?.stop();
     } catch {
@@ -445,16 +470,15 @@ export class AudioManager {
     } catch {
       /* already disconnected */
     }
-    this.engineOsc = null;
-    this.engineDetuneOsc = null;
-    this.engineSubOsc = null;
+    this.engineLowBuffer = null;
+    this.engineHighBuffer = null;
+    this.engineLowSource = null;
+    this.engineHighSource = null;
+    this.engineLowGain = null;
+    this.engineHighGain = null;
     this.engineFilter = null;
     this.engineGain = null;
-    this.vibratoOsc = null;
-    this.vibratoGain = null;
-    this.roughnessSource = null;
-    this.roughnessFilter = null;
-    this.roughnessGain = null;
+    this.engineBuffersLoaded = false;
     this.windSource = null;
     this.windFilter = null;
     this.windGain = null;

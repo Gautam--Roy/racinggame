@@ -16,6 +16,9 @@ const LINEAR_DAMPING = 0.35;
 const BRAKE_ACCEL = 32;
 const REVERSE_ACCEL = 10;
 const MAX_REVERSE = 9;
+const HANDBRAKE_DECEL = 13; // m/s², extra longitudinal braking while handbrake is held
+const HANDBRAKE_MIN_SPEED = 0.5; // m/s, below this we don't apply handbrake decel (no reverse creep)
+const HANDBRAKE_THROTTLE_CUT = 0.15; // locking wheels beats throttle: engine force is cut to this fraction
 const TURN_RATE = 2.3; // rad/s at full steer
 const GRIP = 9; // lateral velocity kill rate
 const GRIP_HANDBRAKE = 1.1;
@@ -28,6 +31,49 @@ const DRIFT_OVERSTEER_MULT = 1.3; // extra yaw rate while drifting, simulates th
 /** True when the car should be sliding: handbrake pulled, or steering hard at speed. Stateless "enter" test — callers owning hysteresis (game.ts) should track their own drifting flag rather than calling this every frame for the exit decision. */
 export function isDrifting(steer: number, handbrake: boolean, fwdSpeed: number): boolean {
   return handbrake || (Math.abs(steer) > DRIFT_ENTER_STEER && Math.abs(fwdSpeed) > DRIFT_SPEED_THRESHOLD);
+}
+
+/**
+ * Pure longitudinal-accel decision, extracted out of driveCar so it's unit-testable without a
+ * Rapier world. Composes throttle drive (with damping compensation), brake/reverse, AND handbrake
+ * braking: previously handbrake only selected a looser grip constant (driftGripTarget in driveCar)
+ * and applied NO deceleration of its own, so "Space" alone (no steering) did nothing but kick up
+ * smoke -- this is what makes it actually slow the car down, stacking with the grip-drop snap-slide
+ * when combined with steering input.
+ *
+ * throttle: Input.throttle (+1 forward, -1 brake/reverse, 0 neutral).
+ * handbrake: Input.handbrake.
+ * fwdSpeed: current forward speed (m/s, signed).
+ * engineAccel: effective engine accel for this frame (already scaled by stats/turbo/slip/gearFactor).
+ * maxSpeed: effective max speed for this frame (already scaled by stats/turbo/slip).
+ */
+export function longitudinalAccel(
+  throttle: number,
+  handbrake: boolean,
+  fwdSpeed: number,
+  engineAccel: number,
+  maxSpeed: number,
+): number {
+  let accel = 0;
+  // Locking the wheels beats the throttle: cut engine force way down while handbrake is held,
+  // even if the driver is still holding W.
+  const effectiveThrottle = handbrake && throttle > 0 ? throttle * HANDBRAKE_THROTTLE_CUT : throttle;
+  if (effectiveThrottle > 0) {
+    // Damping compensation: add back what setLinearDamping is about to remove from fwdSpeed this
+    // step, so the taper curve's zero-crossing (net accel = 0) actually occurs at maxSpeed rather
+    // than at the lower speed where undamped engine force happens to equal the damping loss.
+    const dampingCompensation = LINEAR_DAMPING * Math.max(0, fwdSpeed);
+    accel =
+      engineAccel * effectiveThrottle * Math.max(0, 1 - Math.max(0, fwdSpeed) / maxSpeed) + dampingCompensation;
+  } else if (effectiveThrottle < 0) {
+    accel = fwdSpeed > 0.5 ? -BRAKE_ACCEL : fwdSpeed > -MAX_REVERSE ? -REVERSE_ACCEL : 0;
+  }
+
+  if (handbrake && Math.abs(fwdSpeed) > HANDBRAKE_MIN_SPEED) {
+    accel -= HANDBRAKE_DECEL * Math.sign(fwdSpeed);
+  }
+
+  return accel;
 }
 
 let initialized = false;
@@ -116,17 +162,7 @@ export function driveCar(body: RAPIER.RigidBody, input: Input, dt: number, opts:
   const maxSpeed = MAX_SPEED * stats.speed * (opts.turbo ? 1.4 : 1 + opts.slipBonus);
   const engineAccel = ENGINE_ACCEL * stats.accel * (opts.turbo ? 1.6 : 1 + opts.slipBonus) * (opts.gearFactor ?? 1);
 
-  let accel = 0;
-  if (input.throttle > 0) {
-    // Damping compensation: add back what setLinearDamping is about to remove from fwdSpeed this
-    // step, so the taper curve's zero-crossing (net accel = 0) actually occurs at maxSpeed rather
-    // than at the lower speed where undamped engine force happens to equal the damping loss.
-    const dampingCompensation = LINEAR_DAMPING * Math.max(0, fwdSpeed);
-    accel =
-      engineAccel * input.throttle * Math.max(0, 1 - Math.max(0, fwdSpeed) / maxSpeed) + dampingCompensation;
-  } else if (input.throttle < 0) {
-    accel = fwdSpeed > 0.5 ? -BRAKE_ACCEL : fwdSpeed > -MAX_REVERSE ? -REVERSE_ACCEL : 0;
-  }
+  const accel = longitudinalAccel(input.throttle, input.handbrake, fwdSpeed, engineAccel, maxSpeed);
   VEL.addScaledVector(FWD, accel * dt);
 
   LAT.copy(VEL).addScaledVector(FWD, -VEL.dot(FWD)); // lateral component

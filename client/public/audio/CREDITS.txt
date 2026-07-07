@@ -1,0 +1,13 @@
+Audio Credits
+=============
+
+engine-low.ogg, engine-high.ogg
+  Title: Racing car engine sound loops (loop_0.wav, loop_3_0.wav)
+  Author: domasx2
+  License: CC0 (Creative Commons Zero / Public Domain)
+  Source: https://opengameart.org/content/racing-car-engine-sound-loops
+  Notes: Converted from WAV to OGG Vorbis (ffmpeg -c:a libvorbis -q 4).
+         No other changes. Six pitch-graded loops were published; this
+         project uses the lowest-pitch loop (loop_0.wav -> engine-low.ogg,
+         idle/low RPM) and one of the higher-pitch loops (loop_3_0.wav ->
+         engine-high.ogg, high RPM) for a two-layer crossfade.

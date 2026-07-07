@@ -4,7 +4,7 @@ import { CAR_STATS, CarState, DEFAULT_LAPS, PlayerInfo, Progress, progressScore,
 import { SnapshotBuffer } from '../net/interpolation';
 import { Hud } from '../ui/hud';
 import { AudioManager } from './audio';
-import { GearBox, gearTorque, GearState } from './gears';
+import { BLIP_STRENGTH, GearBox, gearTorque, GearState } from './gears';
 import { ChaseCamera } from './camera';
 import { instantiateCar } from './cars';
 import { Input } from './input';
@@ -28,6 +28,7 @@ import { findTiltTarget, findWheels, prepareWheels, Wheels } from './cars';
 import { Effects } from './effects';
 import { buildPickups, Pickups, slipstreamTarget } from './pickups';
 import { buildSpectators, Spectators } from './spectators';
+import { buildDressing, Dressing } from './dressing';
 
 const FIXED_DT = 1 / 60;
 const INTERP_DELAY_MS = 120;
@@ -157,6 +158,7 @@ export class Game {
   readonly effects = new Effects();
   private pickups!: Pickups;
   private spectators!: Spectators;
+  private dressing!: Dressing;
   private readonly carPosScratch: THREE.Vector3[] = [];
   private charges = 0;
   private turboUntil = 0;
@@ -169,7 +171,7 @@ export class Game {
    * smoothly instead of snapping the instant the `drifting` hysteresis flag flips. */
   private driftAmount = 0;
   private gearbox = new GearBox();
-  private gearState: GearState = { rpm: 0.22, gear: 1, shiftDip: 0 };
+  private gearState: GearState = { rpm: 0.22, gear: 1, shiftDip: 0, blip: 0 };
 
 
   private get turboActive(): boolean {
@@ -209,9 +211,11 @@ export class Game {
     game.ctx.scene.add(game.effects.smoke.points);
     game.ctx.scene.add(game.effects.flame.points);
     game.pickups = buildPickups(game.ctx.scene, curve);
-    game.spectators = buildSpectators(curve);
+    game.spectators = await buildSpectators(curve);
     game.ctx.scene.add(game.spectators.group);
     game.audio.setCrowdSources(game.spectators.stands);
+    game.dressing = buildDressing(curve);
+    game.ctx.scene.add(game.dressing.group);
 
     for (const p of players) {
       const mesh = await instantiateCar(p.car);
@@ -331,6 +335,8 @@ export class Game {
     if (mat && !Array.isArray(mat)) mat.dispose();
     this.ctx.scene.remove(this.spectators.group);
     this.spectators.dispose();
+    this.ctx.scene.remove(this.dressing.group);
+    this.dressing.dispose();
     this.ctx.dispose();
   }
 
@@ -381,7 +387,8 @@ export class Game {
       this.driftAmount += (driftTarget - this.driftAmount) * (1 - Math.exp(-5 * FIXED_DT));
       const speedRatio = Math.abs(fwdSpeedNow) / (MAX_SPEED * this.stats.speed);
       this.gearState = this.gearbox.update(speedRatio, FIXED_DT);
-      const gearFactor = gearTorque(this.gearState.rpm) * (1 - 0.65 * this.gearState.shiftDip);
+      const gearFactor =
+        gearTorque(this.gearState.rpm) * (1 - 0.65 * this.gearState.shiftDip) * (1 + BLIP_STRENGTH * this.gearState.blip);
       driveCar(this.myBody, this.input, FIXED_DT, {
         turbo: this.turboActive,
         slipBonus: this.slipBonus,
