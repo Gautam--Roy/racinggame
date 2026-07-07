@@ -172,6 +172,10 @@ export class Game {
   private driftAmount = 0;
   private gearbox = new GearBox();
   private gearState: GearState = { rpm: 0.22, gear: 1, shiftDip: 0, blip: 0 };
+  /** Overall speed/MAX_SPEED, computed alongside gearState in fixedStep; fed into audio.engine()
+   * (rendered from the rAF loop, not fixedStep) so pitch/crossfade/wind/roll all carry a genuine
+   * monotonic speed cue on top of the per-gear rpm sawtooth. */
+  private speedRatio = 0;
 
 
   private get turboActive(): boolean {
@@ -386,6 +390,7 @@ export class Game {
       const driftTarget = this.drifting ? 1 : 0;
       this.driftAmount += (driftTarget - this.driftAmount) * (1 - Math.exp(-5 * FIXED_DT));
       const speedRatio = Math.abs(fwdSpeedNow) / (MAX_SPEED * this.stats.speed);
+      this.speedRatio = speedRatio;
       this.gearState = this.gearbox.update(speedRatio, FIXED_DT);
       const gearFactor =
         gearTorque(this.gearState.rpm) * (1 - 0.65 * this.gearState.shiftDip) * (1 + BLIP_STRENGTH * this.gearState.blip);
@@ -668,7 +673,7 @@ export class Game {
     );
     CAM_VEL_SCRATCH.set(lv.x, lv.y, lv.z);
     this.chase.update(this.renderPos, this.renderQuat, CAM_VEL_SCRATCH, speed, this.input.steer, dt, this.turboActive, this.drifting);
-    this.audio.engine(this.gearState, this.turboActive);
+    this.audio.engine(this.gearState, this.speedRatio, this.turboActive);
     // crowd proximity is owned here (game.ts): nearest-stand distance from the own car,
     // rather than inside AudioManager, since Game already tracks car/stand world positions.
     let nearestStandDist = Infinity;
