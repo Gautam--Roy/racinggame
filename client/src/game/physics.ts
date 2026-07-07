@@ -4,8 +4,15 @@ import { BarrierBox } from './track';
 import type { Input } from './input';
 
 export const CAR_HALF = { x: 0.85, y: 0.45, z: 1.8 };
-export const MAX_SPEED = 38; // m/s ≈ 137 km/h
-const ENGINE_ACCEL = 22;
+export const MAX_SPEED = 46; // m/s ≈ 166 km/h
+const ENGINE_ACCEL = 24;
+// Rapier's per-body linear damping (see createLocalCar) continuously bleeds velocity, including
+// forward speed. driveCar's throttle taper (1 - fwdSpeed/maxSpeed) was derived assuming a
+// frictionless top speed, so damping was quietly capping the CAR well below MAX_SPEED (e.g. ~87
+// km/h actual vs ~137 km/h nominal at the old constants) — likely a chunk of the "weird"/underwhelming
+// feel. We compensate for it explicitly in the throttle accel below so the taper curve's equilibrium
+// lands at the intended maxSpeed instead of wherever engine-force-vs-damping happens to balance.
+const LINEAR_DAMPING = 0.35;
 const BRAKE_ACCEL = 32;
 const REVERSE_ACCEL = 10;
 const MAX_REVERSE = 9;
@@ -87,6 +94,8 @@ export interface DriveOpts {
   driftAmount?: number;
   /** Per-vehicle performance multipliers (see CAR_STATS in protocol.ts). Defaults to {1,1} (no effect). */
   stats?: { speed: number; accel: number };
+  /** Gearbox torque-curve multiplier on engineAccel (see gears.ts gearTorque + GearBox.shiftDip). Defaults to 1 (no effect). */
+  gearFactor?: number;
 }
 
 const DEFAULT_STATS = { speed: 1, accel: 1 };
@@ -105,11 +114,19 @@ export function driveCar(body: RAPIER.RigidBody, input: Input, dt: number, opts:
 
   const stats = opts.stats ?? DEFAULT_STATS;
   const maxSpeed = MAX_SPEED * stats.speed * (opts.turbo ? 1.4 : 1 + opts.slipBonus);
-  const engineAccel = ENGINE_ACCEL * stats.accel * (opts.turbo ? 1.6 : 1 + opts.slipBonus);
+  const engineAccel = ENGINE_ACCEL * stats.accel * (opts.turbo ? 1.6 : 1 + opts.slipBonus) * (opts.gearFactor ?? 1);
 
   let accel = 0;
-  if (input.throttle > 0) accel = engineAccel * input.throttle * Math.max(0, 1 - Math.max(0, fwdSpeed) / maxSpeed);
-  else if (input.throttle < 0) accel = fwdSpeed > 0.5 ? -BRAKE_ACCEL : fwdSpeed > -MAX_REVERSE ? -REVERSE_ACCEL : 0;
+  if (input.throttle > 0) {
+    // Damping compensation: add back what setLinearDamping is about to remove from fwdSpeed this
+    // step, so the taper curve's zero-crossing (net accel = 0) actually occurs at maxSpeed rather
+    // than at the lower speed where undamped engine force happens to equal the damping loss.
+    const dampingCompensation = LINEAR_DAMPING * Math.max(0, fwdSpeed);
+    accel =
+      engineAccel * input.throttle * Math.max(0, 1 - Math.max(0, fwdSpeed) / maxSpeed) + dampingCompensation;
+  } else if (input.throttle < 0) {
+    accel = fwdSpeed > 0.5 ? -BRAKE_ACCEL : fwdSpeed > -MAX_REVERSE ? -REVERSE_ACCEL : 0;
+  }
   VEL.addScaledVector(FWD, accel * dt);
 
   LAT.copy(VEL).addScaledVector(FWD, -VEL.dot(FWD)); // lateral component

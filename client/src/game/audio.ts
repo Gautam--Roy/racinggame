@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { GearState } from './gears';
 
 // Shared across all AudioManager instances/races. Browsers cap the number of
 // concurrent AudioContexts, and autoplay policy requires the context be
@@ -19,43 +20,6 @@ function ensureContext(): AudioContext | null {
 }
 
 /**
- * 5-gear virtual RPM model for the engine sound. Pure function (no
- * AudioContext access) so it's directly unit-testable.
- *
- * Gears have overlapping bands over the 0..1 speedRatio range; within a
- * gear's band, rpm rises from 0.3 to 1.0. We pick the HIGHEST gear whose
- * band contains the ratio, which means as speed climbs, the engine "shifts
- * up" at the top of each band and rpm visibly drops back down into the next
- * gear's (lower) bandProgress — the classic arcade sawtooth.
- */
-const GEAR_BANDS: ReadonlyArray<readonly [number, number]> = [
-  [0, 0.18],
-  [0.14, 0.34],
-  [0.3, 0.52],
-  [0.48, 0.74],
-  [0.7, 1.0],
-];
-
-export function gearRpm(speedRatio: number): { rpm: number; gear: number } {
-  const r = clamp01(speedRatio);
-  if (r < 0.02) return { rpm: 0.22, gear: 1 };
-
-  let gear = 1;
-  for (let g = GEAR_BANDS.length; g >= 1; g--) {
-    const [lo, hi] = GEAR_BANDS[g - 1];
-    if (r >= lo && r <= hi) {
-      gear = g;
-      break;
-    }
-  }
-
-  const [lo, hi] = GEAR_BANDS[gear - 1];
-  const bandProgress = clamp01((r - lo) / (hi - lo));
-  const rpm = 0.3 + 0.7 * bandProgress;
-  return { rpm, gear };
-}
-
-/**
  * Web Audio soundscape built on a shared, gesture-gated AudioContext. The
  * node graph is (re)built on `unlock()`, called from a user-gesture handler
  * in main.ts (autoplay policy). Every public method no-ops safely before
@@ -73,10 +37,9 @@ export class AudioManager {
   private engineGain: GainNode | null = null;
   private vibratoOsc: OscillatorNode | null = null;
   private vibratoGain: GainNode | null = null;
-  private engineRpm = 0.22; // smoothed virtual-gear RPM (0..1), starts at idle
-  private lastGear = 1;
-  private lastShiftAt = -Infinity;
-  private lastEngineUpdateAt: number | null = null;
+  private roughnessSource: AudioBufferSourceNode | null = null;
+  private roughnessFilter: BiquadFilterNode | null = null;
+  private roughnessGain: GainNode | null = null;
 
   // wind
   private windSource: AudioBufferSourceNode | null = null;
@@ -131,28 +94,50 @@ export class AudioManager {
     osc.type = 'sawtooth';
     osc.frequency.value = 55 + 0.22 * 210;
 
-    // Second, slightly detuned saw layered on the main osc for thickness.
+    // Second saw layered on the main osc for thickness, detuned by a constant
+    // MUSICAL ratio (not a fixed Hz offset) so the beat interval scales with
+    // pitch instead of beating horribly at low RPM (fixed +6Hz against a
+    // ~100Hz fundamental is a wide, ugly ~6% detune; against a ~250Hz
+    // fundamental near redline it's a tight, barely-there ~2.4% detune —
+    // that inconsistency was the main source of the "weird" engine sound).
     const detuneOsc = ctx.createOscillator();
     detuneOsc.type = 'sawtooth';
-    detuneOsc.frequency.value = osc.frequency.value + 6;
+    detuneOsc.frequency.value = osc.frequency.value * 1.004;
 
     const sub = ctx.createOscillator();
     sub.type = 'square';
     sub.frequency.value = (55 + 0.22 * 210) / 2;
 
-    // Gentle vibrato LFO modulating the main osc's frequency.
+    // Gentle vibrato LFO modulating the main osc's frequency — subtle pitch
+    // texture, not a siren wobble.
     const vibratoOsc = ctx.createOscillator();
     vibratoOsc.type = 'sine';
-    vibratoOsc.frequency.value = 4.5;
+    vibratoOsc.frequency.value = 5.5;
     const vibratoGain = ctx.createGain();
-    vibratoGain.gain.value = 2.5; // +/- 2.5 Hz depth
+    vibratoGain.gain.value = 0.8; // +/- 0.8 Hz depth
     vibratoOsc.connect(vibratoGain);
     vibratoGain.connect(osc.frequency);
     vibratoGain.connect(detuneOsc.frequency);
 
+    // Very quiet engine-roughness noise layer: white noise through a bandpass
+    // tracking the fundamental's 2nd harmonic, giving combustion "grit"
+    // texture instead of the clean, synthetic buzz of bare saw waves alone.
+    const roughnessSource = ctx.createBufferSource();
+    roughnessSource.buffer = renderWhiteNoise(ctx, 2);
+    roughnessSource.loop = true;
+    const roughnessFilter = ctx.createBiquadFilter();
+    roughnessFilter.type = 'bandpass';
+    roughnessFilter.frequency.value = (55 + 0.22 * 210) * 2;
+    roughnessFilter.Q.value = 2;
+    const roughnessGain = ctx.createGain();
+    roughnessGain.gain.value = 0.012 + 0.02 * 0.22;
+
     osc.connect(filter);
     detuneOsc.connect(filter);
     sub.connect(filter);
+    roughnessSource.connect(roughnessFilter);
+    roughnessFilter.connect(roughnessGain);
+    roughnessGain.connect(this.master!);
     filter.connect(gain);
     gain.connect(this.master!);
 
@@ -160,6 +145,7 @@ export class AudioManager {
     detuneOsc.start();
     sub.start();
     vibratoOsc.start();
+    roughnessSource.start();
 
     this.engineOsc = osc;
     this.engineDetuneOsc = detuneOsc;
@@ -168,6 +154,9 @@ export class AudioManager {
     this.engineGain = gain;
     this.vibratoOsc = vibratoOsc;
     this.vibratoGain = vibratoGain;
+    this.roughnessSource = roughnessSource;
+    this.roughnessFilter = roughnessFilter;
+    this.roughnessGain = roughnessGain;
   }
 
   private buildWind(): void {
@@ -223,14 +212,16 @@ export class AudioManager {
   }
 
   /**
-   * Engine note per frame. speedRatio 0..1, turbo boosts pitch/gain.
+   * Engine note per frame. `gs` is the shared GearBox output (see gears.ts),
+   * computed once per fixedStep in game.ts and passed to BOTH this method and
+   * driveCar's gearFactor — so the pitch you hear and the acceleration you
+   * feel are always driven by the exact same rpm/gear/shiftDip, never two
+   * independently-smoothed models drifting apart. turbo boosts pitch/gain.
    *
-   * Drives a virtual 5-gear RPM model (see `gearRpm`): rpm glides toward its
-   * per-gear target, and gear changes both dip the RPM (producing the
-   * audible climb-drop-climb "shift" sawtooth) and briefly duck the gain.
-   * Also updates the wind noise layer, which scales with speed only.
+   * No internal rpm smoothing here anymore: GearBox already smooths. Also
+   * updates the wind noise layer, which scales with speed only.
    */
-  engine(speedRatio: number, turbo: boolean): void {
+  engine(gs: GearState, turbo: boolean): void {
     if (
       !this.ctx ||
       !this.engineOsc ||
@@ -241,37 +232,32 @@ export class AudioManager {
     ) {
       return;
     }
-    const r = clamp01(speedRatio);
     const boost = turbo ? 1.25 : 1;
     const t = this.ctx.currentTime;
 
-    const { rpm: targetRpm, gear } = gearRpm(r);
-
-    if (gear !== this.lastGear) {
-      this.lastGear = gear;
-      this.lastShiftAt = t;
-    }
-    // Smooth the RPM toward its target at a ~6/s rate (frame-rate independent),
-    // so upshifts audibly dip before climbing again instead of snapping instantly.
-    const dt = this.lastEngineUpdateAt === null ? 1 / 60 : Math.max(0, Math.min(0.25, t - this.lastEngineUpdateAt));
-    this.lastEngineUpdateAt = t;
-    const rpmLerp = 1 - Math.exp(-6 * dt);
-    this.engineRpm += (targetRpm - this.engineRpm) * rpmLerp;
-
-    const rpm = this.engineRpm;
+    const rpm = clamp01(gs.rpm);
     const freq = (55 + rpm * 210) * boost;
     this.engineOsc.frequency.setTargetAtTime(freq, t, 0.05);
-    this.engineDetuneOsc.frequency.setTargetAtTime(freq + 6, t, 0.05);
+    this.engineDetuneOsc.frequency.setTargetAtTime(freq * 1.004, t, 0.05);
     this.engineSubOsc.frequency.setTargetAtTime(freq / 2, t, 0.05);
     this.engineFilter.frequency.setTargetAtTime(350 + rpm * 2600 + (turbo ? 600 : 0), t, 0.05);
+    if (this.roughnessFilter) {
+      this.roughnessFilter.frequency.setTargetAtTime(freq * 2, t, 0.05);
+    }
+    if (this.roughnessGain) {
+      this.roughnessGain.gain.setTargetAtTime(0.012 + 0.02 * rpm, t, 0.05);
+    }
 
     const baseGain = 0.07 + rpm * (0.15 - 0.07);
-    const sinceShift = t - this.lastShiftAt;
-    const shiftDip = sinceShift < 0.12 ? 0.8 : 1; // -20% dip for ~120ms on gear change
-    this.engineGain.gain.setTargetAtTime(baseGain * shiftDip, t, 0.05);
+    const shiftDip = clamp01(gs.shiftDip);
+    this.engineGain.gain.setTargetAtTime(baseGain * (1 - 0.35 * shiftDip), t, 0.05);
 
     if (this.windGain) {
-      this.windGain.gain.setTargetAtTime(0.05 * r * r, t, 0.1);
+      // Approximate overall speed ratio from gear+rpm (gear bands span 0..1 in
+      // fifths with overlap; this is close enough for a wind-noise curve that
+      // only needs to trend upward with speed, not be exact).
+      const speedApprox = clamp01(((gs.gear - 1) + rpm) / 5);
+      this.windGain.gain.setTargetAtTime(0.05 * speedApprox * speedApprox, t, 0.1);
     }
   }
 
@@ -448,6 +434,7 @@ export class AudioManager {
       this.engineDetuneOsc?.stop();
       this.engineSubOsc?.stop();
       this.vibratoOsc?.stop();
+      this.roughnessSource?.stop();
       this.windSource?.stop();
       this.crowdSource?.stop();
     } catch {
@@ -465,6 +452,9 @@ export class AudioManager {
     this.engineGain = null;
     this.vibratoOsc = null;
     this.vibratoGain = null;
+    this.roughnessSource = null;
+    this.roughnessFilter = null;
+    this.roughnessGain = null;
     this.windSource = null;
     this.windFilter = null;
     this.windGain = null;

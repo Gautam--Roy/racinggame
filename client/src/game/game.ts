@@ -4,6 +4,7 @@ import { CAR_STATS, CarState, DEFAULT_LAPS, PlayerInfo, Progress, progressScore,
 import { SnapshotBuffer } from '../net/interpolation';
 import { Hud } from '../ui/hud';
 import { AudioManager } from './audio';
+import { GearBox, gearTorque, GearState } from './gears';
 import { ChaseCamera } from './camera';
 import { instantiateCar } from './cars';
 import { Input } from './input';
@@ -167,6 +168,9 @@ export class Game {
   /** Continuous 0..1 ramp toward (drifting ? 1 : 0), ~200ms time constant, so grip/oversteer engage
    * smoothly instead of snapping the instant the `drifting` hysteresis flag flips. */
   private driftAmount = 0;
+  private gearbox = new GearBox();
+  private gearState: GearState = { rpm: 0.22, gear: 1, shiftDip: 0 };
+
 
   private get turboActive(): boolean {
     return performance.now() < this.turboUntil;
@@ -375,12 +379,16 @@ export class Game {
 
       const driftTarget = this.drifting ? 1 : 0;
       this.driftAmount += (driftTarget - this.driftAmount) * (1 - Math.exp(-5 * FIXED_DT));
+      const speedRatio = Math.abs(fwdSpeedNow) / (MAX_SPEED * this.stats.speed);
+      this.gearState = this.gearbox.update(speedRatio, FIXED_DT);
+      const gearFactor = gearTorque(this.gearState.rpm) * (1 - 0.65 * this.gearState.shiftDip);
       driveCar(this.myBody, this.input, FIXED_DT, {
         turbo: this.turboActive,
         slipBonus: this.slipBonus,
         drifting: this.drifting,
         driftAmount: this.driftAmount,
         stats: this.stats,
+        gearFactor,
       });
       this.updateTurbo();
     } else {
@@ -653,7 +661,7 @@ export class Game {
     );
     CAM_VEL_SCRATCH.set(lv.x, lv.y, lv.z);
     this.chase.update(this.renderPos, this.renderQuat, CAM_VEL_SCRATCH, speed, this.input.steer, dt, this.turboActive, this.drifting);
-    this.audio.engine(speed / MAX_SPEED, this.turboActive);
+    this.audio.engine(this.gearState, this.turboActive);
     // crowd proximity is owned here (game.ts): nearest-stand distance from the own car,
     // rather than inside AudioManager, since Game already tracks car/stand world positions.
     let nearestStandDist = Infinity;
