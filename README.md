@@ -96,5 +96,8 @@ STATIC_DIR=client/dist PORT=8080 node server-dist/index.mjs
 Car models: [Kenney Car Kit](https://kenney.nl/assets/car-kit) (CC0). License
 included at `client/public/models/cars/License.txt`.
 
+Crowd/camera-operator models: [Kenney Blocky Characters](https://kenney.nl/assets/blocky-characters)
+(CC0). Details at `client/public/models/crowd/CREDITS.txt`.
+
 Engine audio: [Racing car engine sound loops](https://opengameart.org/content/racing-car-engine-sound-loops)
 by domasx2 (CC0). Details at `client/public/audio/CREDITS.txt`.
