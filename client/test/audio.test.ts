@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gearRpm } from '../src/game/audio';
+import { gearRpm } from '../src/game/gears';
 
 describe('gearRpm', () => {
   it('idle/stationary: ratio 0 sits in gear 1 at low rpm', () => {
