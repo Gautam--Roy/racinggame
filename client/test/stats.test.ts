@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CAR_MODELS, CAR_STATS } from '../../shared/src/protocol';
-import { MAX_SPEED } from '../src/game/physics';
+import { longitudinalAccel, MAX_SPEED } from '../src/game/physics';
 
 const ENGINE_ACCEL = 22; // mirrors the private constant in physics.ts (see driveCar effective-cap formula)
 
@@ -63,5 +63,40 @@ describe('effective speed/accel caps (mirrors driveCar composition)', () => {
     const withSlip = effectiveCaps(CAR_STATS.taxi, { turbo: false, slipBonus: 0.2 });
     expect(withSlip.maxSpeed).toBeCloseTo(MAX_SPEED * 0.96 * 1.2, 5);
     expect(withSlip.engineAccel).toBeCloseTo(ENGINE_ACCEL * 1.06 * 1.2, 5);
+  });
+});
+
+describe('longitudinalAccel (handbrake braking)', () => {
+  it('throttle-only, no handbrake: positive accel, tapering toward maxSpeed', () => {
+    const a = longitudinalAccel(1, false, 10, 24, 46);
+    expect(a).toBeGreaterThan(0);
+  });
+
+  it('handbrake at speed produces strongly negative accel even with full throttle', () => {
+    // Handbrake cuts engine force to 15% and adds a flat -13 m/s^2 decel; at moderate speed the
+    // (small) throttle contribution plus damping compensation don't come close to offsetting that.
+    const a = longitudinalAccel(1, true, 10, 24, 46);
+    expect(a).toBeLessThan(-5);
+  });
+
+  it('handbrake at speed with no throttle also brakes hard', () => {
+    const a = longitudinalAccel(0, true, 25, 24, 46);
+    expect(a).toBeLessThan(-10);
+  });
+
+  it('handbrake near zero speed produces no reverse creep (accel not pushed negative-signed toward reverse)', () => {
+    const a = longitudinalAccel(0, true, 0.1, 24, 46);
+    expect(a).toBeCloseTo(0, 5);
+  });
+
+  it('brake (throttle < 0) behavior unchanged without handbrake: strong deceleration while moving forward', () => {
+    const a = longitudinalAccel(-1, false, 20, 24, 46);
+    expect(a).toBeLessThan(0);
+  });
+
+  it('brake at low/negative speed applies reverse accel, unaffected by handbrake changes', () => {
+    const a = longitudinalAccel(-1, false, -3, 24, 46);
+    expect(a).toBeLessThan(0);
+    expect(a).toBeGreaterThan(-15); // reverse accel magnitude (10), not brake accel (32)
   });
 });

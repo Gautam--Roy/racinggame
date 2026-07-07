@@ -4,7 +4,7 @@ import { CAR_STATS, CarState, DEFAULT_LAPS, PlayerInfo, Progress, progressScore,
 import { SnapshotBuffer } from '../net/interpolation';
 import { Hud } from '../ui/hud';
 import { AudioManager } from './audio';
-import { GearBox, gearTorque, GearState } from './gears';
+import { BLIP_STRENGTH, GearBox, gearTorque, GearState } from './gears';
 import { ChaseCamera } from './camera';
 import { instantiateCar } from './cars';
 import { Input } from './input';
@@ -169,7 +169,7 @@ export class Game {
    * smoothly instead of snapping the instant the `drifting` hysteresis flag flips. */
   private driftAmount = 0;
   private gearbox = new GearBox();
-  private gearState: GearState = { rpm: 0.22, gear: 1, shiftDip: 0 };
+  private gearState: GearState = { rpm: 0.22, gear: 1, shiftDip: 0, blip: 0 };
 
 
   private get turboActive(): boolean {
@@ -381,7 +381,8 @@ export class Game {
       this.driftAmount += (driftTarget - this.driftAmount) * (1 - Math.exp(-5 * FIXED_DT));
       const speedRatio = Math.abs(fwdSpeedNow) / (MAX_SPEED * this.stats.speed);
       this.gearState = this.gearbox.update(speedRatio, FIXED_DT);
-      const gearFactor = gearTorque(this.gearState.rpm) * (1 - 0.65 * this.gearState.shiftDip);
+      const gearFactor =
+        gearTorque(this.gearState.rpm) * (1 - 0.65 * this.gearState.shiftDip) * (1 + BLIP_STRENGTH * this.gearState.blip);
       driveCar(this.myBody, this.input, FIXED_DT, {
         turbo: this.turboActive,
         slipBonus: this.slipBonus,

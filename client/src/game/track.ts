@@ -121,6 +121,20 @@ export function buildTrack(): TrackData {
   beam.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), side);
   group.add(beam);
 
+  // --- checkered start/finish line across the road at u=0 ---
+  group.add(checkeredStartLine(start.pos, start.tangent, side));
+
+  // --- painted grid box brackets at each of the 4 starting slots ---
+  const bracketMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 });
+  const bracketGeo = gridBracketGeometry();
+  for (let slot = 0; slot < 4; slot++) {
+    const { pos: slotPos, yaw } = gridPose(slot);
+    const bracket = new THREE.Mesh(bracketGeo, bracketMat);
+    bracket.position.copy(slotPos).setY(0.03);
+    bracket.quaternion.copy(flatPlaneQuat(yaw));
+    group.add(bracket);
+  }
+
   // --- F1-style start light rig, mounted under the gantry beam, facing the grid ---
   // Cars approach the line from behind it (grid sits at u≈0.99, just before u=0/checkpoint 0),
   // so the rig must face back along -tangent (toward the grid), not along the tangent.
@@ -225,6 +239,107 @@ function stripe(offset: number, color: number): THREE.Mesh {
   geo.setIndex(indices);
   geo.computeVertexNormals();
   return new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color }));
+}
+
+/**
+ * Checkered start/finish line: a road-width plane strip at u=0, textured with a small
+ * CanvasTexture checker pattern, laid flat (y=0.03) across the road, oriented to the track
+ * tangent there. Shares one canvas texture across calls (only ever called once per track build,
+ * but keeping this pattern simple/self-contained rather than caching at module scope since a
+ * fresh buildTrack() per race already recreates the whole group).
+ */
+function checkeredStartLine(pos: THREE.Vector3, tangent: THREE.Vector3, side: THREE.Vector3): THREE.Mesh {
+  void side; // orientation now derived from tangent via flatPlaneQuat, kept param for call-site clarity
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 16;
+  const ctx = canvas.getContext('2d')!;
+  const cols = 8;
+  const rows = 2;
+  const cw = canvas.width / cols;
+  const ch = canvas.height / rows;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      ctx.fillStyle = (x + y) % 2 === 0 ? '#ffffff' : '#111111';
+      ctx.fillRect(x * cw, y * ch, cw, ch);
+    }
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.magFilter = THREE.NearestFilter;
+
+  const lineWidth = 1.8; // m, along-track depth of the checkered strip
+  const geo = new THREE.PlaneGeometry(ROAD_WIDTH, lineWidth);
+  const mat = new THREE.MeshBasicMaterial({ map: texture });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(pos).setY(0.03);
+  const yaw = Math.atan2(-tangent.x, -tangent.z); // same convention as gridPose's yaw
+  mesh.quaternion.copy(flatPlaneQuat(yaw));
+  return mesh;
+}
+
+/**
+ * Quaternion laying a PlaneGeometry flat on the ground (normal +Y) with its local +X mapped to
+ * the world-space rightward "side" vector for the given car-heading yaw, and local +Y mapped to
+ * the forward/heading direction — i.e. same yaw convention as gridPose (0 => local -Z world dir).
+ * Shared by the grid brackets and the checkered start line so both rotate consistently with car
+ * placement.
+ */
+const FLAT_PLANE_BASIS = new THREE.Matrix4();
+function flatPlaneQuat(yaw: number): THREE.Quaternion {
+  const fwd = new THREE.Vector3(0, 0, -1).applyAxisAngle(UP, yaw);
+  const side = new THREE.Vector3().crossVectors(fwd, UP).normalize();
+  FLAT_PLANE_BASIS.makeBasis(side, fwd, UP);
+  return new THREE.Quaternion().setFromRotationMatrix(FLAT_PLANE_BASIS);
+}
+
+/**
+ * Shared geometry for a single grid box: white L-shaped corner brackets outlining a
+ * ~2.4m (wide) x 4.6m (long) box, built as 8 short BoxGeometry-style strips merged into one
+ * BufferGeometry so every slot's Mesh can share it (see gridBracketGeometry callers).
+ */
+function gridBracketGeometry(): THREE.BufferGeometry {
+  const boxW = 2.4;
+  const boxL = 4.6;
+  const cornerLen = 0.9; // length of each bracket arm
+  const thickness = 0.12;
+  const hw = boxW / 2;
+  const hl = boxL / 2;
+
+  const positions: number[] = [];
+  const indices: number[] = [];
+  let vi = 0;
+  const addQuad = (x0: number, y0: number, x1: number, y1: number) => {
+    positions.push(x0, y0, 0, x1, y0, 0, x1, y1, 0, x0, y1, 0);
+    indices.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
+    vi += 4;
+  };
+
+  for (const cx of [-1, 1]) {
+    for (const cz of [-1, 1]) {
+      const cornerX = cx * hw;
+      const cornerZ = cz * hl;
+      // arm running along X from the corner
+      addQuad(
+        Math.min(cornerX, cornerX - cx * cornerLen),
+        Math.min(cornerZ - cz * thickness / 2, cornerZ + cz * thickness / 2),
+        Math.max(cornerX, cornerX - cx * cornerLen),
+        Math.max(cornerZ - cz * thickness / 2, cornerZ + cz * thickness / 2),
+      );
+      // arm running along Z from the corner
+      addQuad(
+        Math.min(cornerX - cx * thickness / 2, cornerX + cx * thickness / 2),
+        Math.min(cornerZ, cornerZ - cz * cornerLen),
+        Math.max(cornerX - cx * thickness / 2, cornerX + cx * thickness / 2),
+        Math.max(cornerZ, cornerZ - cz * cornerLen),
+      );
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
 }
 
 /** Starting grid pose for a slot (0-3), just behind the start line, 2 columns. */
