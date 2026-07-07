@@ -14,6 +14,8 @@ const CONTENT_TYPES: Record<string, string> = {
   '.wasm': 'application/wasm',
   '.svg': 'image/svg+xml',
   '.map': 'application/json; charset=utf-8',
+  '.ogg': 'audio/ogg',
+  '.wav': 'audio/wav',
 };
 
 /**
@@ -77,7 +79,7 @@ export function createStaticHandler(rootDir: string) {
       headers['Cache-Control'] = 'public, max-age=31536000, immutable';
     } else if (urlPath === '/' || urlPath === '/index.html') {
       headers['Cache-Control'] = 'no-cache';
-    } else if (urlPath.startsWith('/models/')) {
+    } else if (urlPath.startsWith('/models/') || urlPath.startsWith('/audio/')) {
       headers['Cache-Control'] = 'public, max-age=86400';
     }
     res.writeHead(200, headers);
