@@ -25,23 +25,34 @@ function ensureContext(): AudioContext | null {
  * in main.ts (autoplay policy). Every public method no-ops safely before
  * unlock so callers never need to guard.
  */
-// Sample-driven engine tuning. playbackRate maps rpm (0..1) onto this range --
-// tuned so idle sounds idle and redline sounds urgent without chipmunking.
-const ENGINE_RATE_BASE = 0.55;
-const ENGINE_RATE_SPAN = 1.1;
+// Sample-driven engine tuning. playbackRate maps rpm (0..1), gear, and overall speedRatio onto
+// this range -- tuned so idle sounds idle and redline sounds urgent without chipmunking, AND so
+// that overall speed is audible independent of the per-gear rpm sawtooth (each gear sits on a
+// progressively higher pitch shelf via GEAR_RATE_STEP, so shifting up audibly raises the floor
+// even though rpm itself resets low within the new gear's band).
+const ENGINE_RATE_BASE = 0.5;
+const ENGINE_RATE_SPAN = 0.85;
+const GEAR_RATE_STEP = 0.075;
 const ENGINE_TURBO_BOOST = 1.18;
-// Equal-power crossfade band between the low-RPM and high-RPM loops.
-const CROSSFADE_LO = 0.45;
-const CROSSFADE_HI = 0.75;
+// Equal-power crossfade band between the low-RPM and high-RPM loops, driven by overall
+// speedRatio (not rpm) so the timbre shift tracks true speed instead of sawing every gear.
+const CROSSFADE_LO = 0.25;
+const CROSSFADE_HI = 0.7;
 // Post-shift rev-match blip: momentary playbackRate bump -- a "nice rev-match effect" tied to the
 // real gear-catch moment (GearState.blip) instead of a constant LFO.
 const BLIP_RATE_BOOST = 0.04;
+// Wind layer: gain scales with speedRatio^2, strong enough at top speed to read as rushing air.
+const WIND_GAIN_MAX = 0.13;
+// Road-roll layer: looping lowpassed noise, gain scales with speedRatio^1.5 -- a monotonic
+// "faster = louder rumble" bed independent of the rpm sawtooth.
+const ROLL_GAIN_MAX = 0.07;
+const ROLL_FILTER_HZ = 220;
 
 export class AudioManager {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
 
-  // engine (sample-based: two pitch-graded loops crossfaded by rpm)
+  // engine (sample-based: two pitch-graded loops crossfaded by speedRatio)
   private engineLowBuffer: AudioBuffer | null = null;
   private engineHighBuffer: AudioBuffer | null = null;
   private engineLowSource: AudioBufferSourceNode | null = null;
@@ -56,6 +67,12 @@ export class AudioManager {
   private windSource: AudioBufferSourceNode | null = null;
   private windFilter: BiquadFilterNode | null = null;
   private windGain: GainNode | null = null;
+
+  // road roll (speed bed) -- looping low-passed noise, gain scales with speedRatio^1.5. Gives a
+  // strong monotonic "faster = louder rumble" cue that doesn't reset every gear like rpm does.
+  private rollSource: AudioBufferSourceNode | null = null;
+  private rollFilter: BiquadFilterNode | null = null;
+  private rollGain: GainNode | null = null;
 
   // crowd bed
   private crowdSource: AudioBufferSourceNode | null = null;
@@ -84,6 +101,7 @@ export class AudioManager {
 
     this.buildEngine();
     this.buildWind();
+    this.buildRoll();
     this.buildCrowd();
     void this.loadEngineBuffers();
 
@@ -206,6 +224,33 @@ export class AudioManager {
     this.windGain = gain;
   }
 
+  /** Road-roll speed bed: looping noise through a 220Hz lowpass, silent at rest, ramping in with
+   * speedRatio^1.5. Gives a monotonic "faster = louder rumble" cue independent of the rpm sawtooth. */
+  private buildRoll(): void {
+    const ctx = this.ctx!;
+    const buffer = renderWhiteNoise(ctx, 2);
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = ROLL_FILTER_HZ;
+
+    const gain = ctx.createGain();
+    gain.gain.value = 0; // silent at rest
+
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.master!);
+    source.start();
+
+    this.rollSource = source;
+    this.rollFilter = filter;
+    this.rollGain = gain;
+  }
+
   private buildCrowd(): void {
     const ctx = this.ctx!;
     const buffer = renderPinkNoise(ctx, 2);
@@ -233,20 +278,22 @@ export class AudioManager {
   }
 
   /**
-   * Engine note per frame. `gs` is the shared GearBox output (see gears.ts),
-   * computed once per fixedStep in game.ts and passed to BOTH this method and
-   * driveCar's gearFactor — so the pitch you hear and the acceleration you
-   * feel are always driven by the exact same rpm/gear/shiftDip, never two
-   * independently-smoothed models drifting apart. turbo boosts pitch/gain.
+   * Engine note per frame. `gs` is the shared GearBox output (see gears.ts), computed once per
+   * fixedStep in game.ts and passed to BOTH this method and driveCar's gearFactor — so the pitch
+   * you hear and the acceleration you feel are always driven by the exact same rpm/gear/shiftDip,
+   * never two independently-smoothed models drifting apart. `speedRatio` is the same overall
+   * speed/MAX_SPEED value game.ts feeds into GearBox.update -- passed here too so pitch, crossfade,
+   * wind, and road-roll all carry a genuine monotonic speed cue on top of the per-gear rpm
+   * sawtooth (rpm alone saws through the same band every gear, which reads as a static engine note
+   * at cruise -- speedRatio fixes that). turbo boosts pitch/gain.
    *
-   * Sample-driven: two pitch-graded engine loops (low/high RPM) crossfaded by
-   * rpm with an equal-power curve, both resampled via playbackRate to track
-   * rpm continuously within their band. No-ops safely until loadEngineBuffers()
-   * resolves (this.engineLowSource stays null) — brief silence on first
-   * unlock() is expected. Also updates the wind noise layer, which scales
-   * with speed only.
+   * Sample-driven: two pitch-graded engine loops (low/high RPM) crossfaded by speedRatio with an
+   * equal-power curve, both resampled via playbackRate to track rpm+gear+speed continuously. No-ops
+   * safely until loadEngineBuffers() resolves (this.engineLowSource stays null) — brief silence on
+   * first unlock() is expected. Also updates the wind and road-roll noise layers, which scale with
+   * speed only.
    */
-  engine(gs: GearState, turbo: boolean): void {
+  engine(gs: GearState, speedRatio: number, turbo: boolean): void {
     if (
       !this.ctx ||
       !this.engineLowSource ||
@@ -263,29 +310,35 @@ export class AudioManager {
 
     const rpm = clamp01(gs.rpm);
     const blip = clamp01(gs.blip);
-    const rate = (ENGINE_RATE_BASE + rpm * ENGINE_RATE_SPAN) * boost * (1 + BLIP_RATE_BOOST * blip);
+    const speed = clamp01(speedRatio);
+    // Each gear sits on a higher pitch shelf (GEAR_RATE_STEP per gear) so shifting up audibly
+    // raises the floor even though rpm resets low within the new gear's band -- still saws within
+    // a gear (rpm term), but no longer saws through the SAME band every gear.
+    const rate =
+      (ENGINE_RATE_BASE + rpm * ENGINE_RATE_SPAN + (gs.gear - 1) * GEAR_RATE_STEP) *
+      boost *
+      (1 + BLIP_RATE_BOOST * blip);
     this.engineLowSource.playbackRate.setTargetAtTime(rate, t, 0.05);
     this.engineHighSource.playbackRate.setTargetAtTime(rate, t, 0.05);
     this.engineFilter.frequency.setTargetAtTime(350 + rpm * 2600 + (turbo ? 600 : 0), t, 0.05);
 
-    // Equal-power crossfade: cos/sin pair so the combined perceived loudness stays roughly
-    // constant through the handoff instead of dipping (linear fade) or bulging (both at 1).
-    const x = clamp01((rpm - CROSSFADE_LO) / (CROSSFADE_HI - CROSSFADE_LO));
+    // Equal-power crossfade by overall speedRatio (not rpm): the low/high sample timbre now
+    // tracks true speed instead of resetting every gear.
+    const x = clamp01((speed - CROSSFADE_LO) / (CROSSFADE_HI - CROSSFADE_LO));
     const lowWeight = Math.cos(x * (Math.PI / 2));
     const highWeight = Math.sin(x * (Math.PI / 2));
     this.engineLowGain.gain.setTargetAtTime(lowWeight, t, 0.05);
     this.engineHighGain.gain.setTargetAtTime(highWeight, t, 0.05);
 
-    const baseGain = 0.5 + rpm * (0.85 - 0.5);
+    const baseGain = (0.5 + rpm * (0.85 - 0.5)) * (0.85 + 0.3 * speed);
     const shiftDip = clamp01(gs.shiftDip);
     this.engineGain.gain.setTargetAtTime(baseGain * (1 - 0.35 * shiftDip), t, 0.05);
 
     if (this.windGain) {
-      // Approximate overall speed ratio from gear+rpm (gear bands span 0..1 in
-      // fifths with overlap; this is close enough for a wind-noise curve that
-      // only needs to trend upward with speed, not be exact).
-      const speedApprox = clamp01(((gs.gear - 1) + rpm) / 5);
-      this.windGain.gain.setTargetAtTime(0.05 * speedApprox * speedApprox, t, 0.1);
+      this.windGain.gain.setTargetAtTime(WIND_GAIN_MAX * speed * speed, t, 0.1);
+    }
+    if (this.rollGain) {
+      this.rollGain.gain.setTargetAtTime(ROLL_GAIN_MAX * Math.pow(speed, 1.5), t, 0.1);
     }
   }
 
@@ -461,6 +514,7 @@ export class AudioManager {
       this.engineLowSource?.stop();
       this.engineHighSource?.stop();
       this.windSource?.stop();
+      this.rollSource?.stop();
       this.crowdSource?.stop();
     } catch {
       /* already stopped */
@@ -482,6 +536,9 @@ export class AudioManager {
     this.windSource = null;
     this.windFilter = null;
     this.windGain = null;
+    this.rollSource = null;
+    this.rollFilter = null;
+    this.rollGain = null;
     this.crowdSource = null;
     this.crowdFilter = null;
     this.crowdGain = null;

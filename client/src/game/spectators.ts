@@ -37,11 +37,38 @@ const TIER_HEIGHT = 1.4;
 const ROOF_HEADROOM = 1.6;
 const ROOF_Y = TIER_COUNT * TIER_HEIGHT + ROOF_HEADROOM; // 5.8
 
-const CROWD_PER_STAND = 111; // 37 per variant x 3 variants
+// Denser crowd: 2 rows per tier x ~13 per row x 3 tiers = ~78 seats per stand, split across the 3
+// model variants (still 3 InstancedMeshes/stand -- perf unaffected, matrices updated every other
+// frame). CROWD_PER_STAND is the actual total seat count (matches totalSeats in the build loop);
+// keep the two in sync if either factor changes.
+const CROWD_ROWS_PER_TIER = 2;
+const CROWD_PER_ROW = 28;
+const CROWD_PER_STAND = CROWD_ROWS_PER_TIER * CROWD_PER_ROW * TIER_COUNT; // = 168
 const CROWD_VARIANTS = 3;
 const CROWD_PER_VARIANT = Math.floor(CROWD_PER_STAND / CROWD_VARIANTS);
 // Seated crowd is normalized to this standing-equivalent height once seated on a tier.
 const CROWD_SEAT_HEIGHT = 0.9;
+// Instances rendered ~1.25x larger than a literal seated-height model so they read clearly at
+// typical camera distance instead of vanishing into sparse pastel dots.
+const CROWD_SCALE_BOOST = 1.25;
+
+// ---- crowd texture cards: the realism multiplier -- a painted "sea of people" backdrop behind
+// the 3D rows, filling the upper tiers with hundreds of apparent spectators at ~zero draw cost
+// (two swapped/crossfaded planes per stand, alpha-tested edges). ----
+const CROWD_CARD_TEX_W = 1024;
+const CROWD_CARD_TEX_H = 256;
+const CROWD_CARD_ROWS = 4;
+const CROWD_CARD_COLS = 40;
+const CROWD_CARD_SKIN_TONES = ['#ffddb0', '#f1c27d', '#e0ac69', '#c68642', '#8d5524', '#5a3825'];
+const CROWD_CARD_CLOTHING_COLORS = [
+  '#d8342a', '#2a5cd8', '#2ea84a', '#e0862a', '#9c3fd8', '#d8ac2a', '#2ac7c2', '#d85f8f',
+  '#4a4e57', '#c9c9c9', '#7a2ee6', '#1f8a5f',
+];
+const CROWD_CARD_CROSSFADE_HZ = 1.4;
+const CROWD_CARD_WIDTH = STAND_WIDTH * 0.98;
+// Sized to fit the headroom between the top tier and the roof (ROOF_Y - top tier height), verified
+// against ROOF_Y/TIER_COUNT/TIER_HEIGHT below at the card's build site so it never clips the roof.
+const CROWD_CARD_HEIGHT = 1.3;
 
 // Motion behavior groups assigned per-instance at build time.
 const enum Behavior {
@@ -85,6 +112,20 @@ const FALLBACK_PERSON_HEIGHT = CROWD_BODY_HEIGHT + CROWD_HEAD_RADIUS * 0.9 + CRO
   );
   if (clearance <= 0) {
     throw new Error(`[spectators] seated crowd clips the roof: clearance=${clearance.toFixed(3)} <= 0`);
+  }
+}
+
+// ---- crowd-card clearance proof (computed once at module load, thrown if violated) ----
+{
+  const cardCenterY = TIER_COUNT * TIER_HEIGHT + CROWD_CARD_HEIGHT * 0.5 + 0.05;
+  const cardTopY = cardCenterY + CROWD_CARD_HEIGHT / 2;
+  const cardClearance = ROOF_Y - cardTopY;
+  // eslint-disable-next-line no-console
+  console.info(
+    `[spectators] crowd-card clearance: cardTopY=${cardTopY.toFixed(3)} roofY=${ROOF_Y.toFixed(2)} clearance=${cardClearance.toFixed(3)}`,
+  );
+  if (cardClearance <= 0) {
+    throw new Error(`[spectators] crowd card clips the roof: clearance=${cardClearance.toFixed(3)} <= 0`);
   }
 }
 
@@ -150,6 +191,96 @@ function buildCheckerTexture(): THREE.CanvasTexture {
   return tex;
 }
 
+/**
+ * Paints a "sea of people" crowd card: CROWD_CARD_ROWS x CROWD_CARD_COLS simplified spectator
+ * figures (head + shoulders blob, varied skin tone / clothing color, a vertical gradient shading
+ * darker toward the bottom of each figure for cheap fake AO, slight per-row jitter so rows don't
+ * look perfectly ruled). `poseSeed` offsets each figure's arm/head pose slightly so a second card
+ * generated with a different seed can be crossfaded against this one for a subtle "crowd shifting"
+ * animation. Returns a CanvasTexture sized CROWD_CARD_TEX_W x CROWD_CARD_TEX_H with a transparent
+ * background (alpha-tested in the material) above/around the painted figures.
+ */
+function buildCrowdCardTexture(poseSeed: number): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = CROWD_CARD_TEX_W;
+  canvas.height = CROWD_CARD_TEX_H;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const cellW = canvas.width / CROWD_CARD_COLS;
+  const cellH = canvas.height / CROWD_CARD_ROWS;
+  // Deterministic-ish PRNG seeded by poseSeed + cell index so frameA/frameB share the same crowd
+  // "identity" per seat but with a slightly different pose (arms up/down/waving), not a totally
+  // different random crowd -- that reads as a coherent crowd shifting, not noise.
+  let seed = poseSeed * 7919 + 13;
+  const rand = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return (seed % 10000) / 10000;
+  };
+
+  for (let row = 0; row < CROWD_CARD_ROWS; row++) {
+    // back rows (higher on the card = further away) are drawn smaller/higher for cheap depth
+    const rowY = row * cellH + cellH * 0.5;
+    const rowScale = 0.75 + (row / (CROWD_CARD_ROWS - 1)) * 0.35;
+    for (let col = 0; col < CROWD_CARD_COLS; col++) {
+      const jitterX = (rand() - 0.5) * cellW * 0.3;
+      const jitterY = (rand() - 0.5) * cellH * 0.15;
+      const cx = col * cellW + cellW * 0.5 + jitterX;
+      const cy = rowY + jitterY;
+      const figH = cellH * rowScale * 0.92;
+      const figW = figH * 0.55;
+      const skin = CROWD_CARD_SKIN_TONES[Math.floor(rand() * CROWD_CARD_SKIN_TONES.length)];
+      const clothing = CROWD_CARD_CLOTHING_COLORS[Math.floor(rand() * CROWD_CARD_CLOTHING_COLORS.length)];
+      const poseRoll = rand(); // arms-down / arms-up / waving, biased by poseSeed via rand() stream
+
+      // torso/shoulders: vertical gradient, darker at the bottom (cheap fake AO/contact shadow)
+      const torsoTop = cy - figH * 0.15;
+      const torsoBottom = cy + figH * 0.5;
+      const grad = ctx.createLinearGradient(0, torsoTop, 0, torsoBottom);
+      grad.addColorStop(0, clothing);
+      grad.addColorStop(1, shadeColor(clothing, -0.35));
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.ellipse(cx, (torsoTop + torsoBottom) / 2, figW * 0.5, (torsoBottom - torsoTop) / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // arms: simple offset blobs, position varies by poseRoll for arms up/down/waving variety
+      ctx.fillStyle = shadeColor(clothing, -0.15);
+      const armY = poseRoll > 0.66 ? torsoTop - figH * 0.08 : torsoTop + figH * 0.05; // raised vs at-side
+      const armSpread = figW * (poseRoll > 0.33 ? 0.62 : 0.5);
+      for (const armSign of [-1, 1]) {
+        ctx.beginPath();
+        ctx.ellipse(cx + armSign * armSpread, armY, figW * 0.16, figH * 0.22, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // head
+      ctx.fillStyle = skin;
+      ctx.beginPath();
+      ctx.arc(cx, cy - figH * 0.42, figW * 0.28, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/** Darkens (negative amt) or lightens (positive amt) a '#rrggbb' hex color by `amt` (-1..1). */
+function shadeColor(hex: string, amt: number): string {
+  const num = parseInt(hex.slice(1), 16);
+  let r = (num >> 16) & 0xff;
+  let g = (num >> 8) & 0xff;
+  let b = num & 0xff;
+  const f = amt < 0 ? 1 + amt : 1 - amt;
+  const base = amt < 0 ? 0 : 255;
+  r = Math.round(r * f + base * (amt < 0 ? 0 : amt));
+  g = Math.round(g * f + base * (amt < 0 ? 0 : amt));
+  b = Math.round(b * f + base * (amt < 0 ? 0 : amt));
+  const clamp = (v: number) => Math.max(0, Math.min(255, v));
+  return `#${clamp(r).toString(16).padStart(2, '0')}${clamp(g).toString(16).padStart(2, '0')}${clamp(b).toString(16).padStart(2, '0')}`;
+}
+
 function pickBehavior(): Behavior {
   const r = Math.random();
   let acc = 0;
@@ -160,6 +291,18 @@ function pickBehavior(): Behavior {
   return Behavior.Sway;
 }
 
+// The Kenney "Blocky Characters" arm nodes (arm-left/arm-right) are authored as a box that is as
+// WIDE (local X, the outward-from-shoulder axis) as it is long, flush against the torso for the
+// model's full height -- at small/distant render scale that reads as a flat horizontal bar level
+// with the torso, i.e. a "plus sign" silhouette instead of a person. Verified against the raw glTF
+// node data: arm box local bbox is x:[0,0.4] (width, pivoting at the shoulder/node-origin) y:[-1,0.1]
+// (already-vertical hang length) z:[-0.2,0.2] (depth). Narrowing the box's local X down to
+// ARM_WIDTH_SCALE of its original girth (pivoting at the node's own origin -- the shoulder joint --
+// so it can't rotate into/clip the torso) collapses the full-figure bbox width/height ratio from
+// ~0.84 to ~0.55, killing the plus-sign read while keeping the arm hanging in the same place.
+const ARM_WIDTH_SCALE = 0.3;
+const ARM_DEPTH_SCALE = 0.6; // also slim the arm's front-back depth a bit for a less blocky limb
+
 /**
  * Loads a Kenney "Blocky Characters" GLB (unskinned — separate rigid mesh nodes for
  * legs/torso/arms/head parented under a `root` node) and bakes every node's world transform
@@ -167,10 +310,21 @@ function pickBehavior(): Behavior {
  * height 1 (caller rescales/positions as needed). Strips skinIndex/skinWeight attributes
  * defensively (these particular models have none, but merge would otherwise choke on mismatched
  * attribute sets if a differently-authored variant ever slipped in).
+ *
+ * Before baking, narrows arm-left/arm-right nodes (see ARM_WIDTH_SCALE) so the merged silhouette
+ * reads as a person with arms at their sides instead of a flat cross/plus shape.
  */
 async function loadBlockyCharacter(loader: GLTFLoader, url: string): Promise<THREE.BufferGeometry> {
   const gltf = await loader.loadAsync(url);
   const scene = gltf.scene;
+  scene.traverse((obj) => {
+    if (obj.name === 'arm-left' || obj.name === 'arm-right') {
+      // Scale about the node's own local origin (the shoulder pivot) BEFORE updateWorldMatrix bakes
+      // world transforms below -- narrows the box without moving the shoulder attachment point or
+      // risking any rotation-based clipping into the torso.
+      obj.scale.set(ARM_WIDTH_SCALE, 1, ARM_DEPTH_SCALE);
+    }
+  });
   scene.updateWorldMatrix(true, true);
   const parts: THREE.BufferGeometry[] = [];
   scene.traverse((obj) => {
@@ -190,6 +344,9 @@ async function loadBlockyCharacter(loader: GLTFLoader, url: string): Promise<THR
   merged.computeBoundingBox();
   const box = merged.boundingBox!;
   const height = Math.max(box.max.y - box.min.y, 0.001);
+  const width = Math.max(box.max.x - box.min.x, 0.001);
+  // eslint-disable-next-line no-console
+  console.info(`[spectators] ${url} bbox aspect (width/height) after arm-down bake: ${(width / height).toFixed(3)}`);
   // normalize: feet at y=0, uniform scale so total height == 1
   merged.translate(0, -box.min.y, 0);
   merged.scale(1 / height, 1 / height, 1 / height);
@@ -297,10 +454,36 @@ export async function buildSpectators(curve: THREE.CatmullRomCurve3): Promise<Sp
   disposables.push({ geometry: tierBoxGeo }, { geometry: postGeo }, { geometry: roofGeo }, { geometry: panelGeo });
   disposables.push({ material: structureMat }, { material: postMat });
 
+  // ---- seat-row color strips (thin colored boxes on each tier's tread) + safety railings (bars +
+  // posts) + crowd texture-card geometry (shared across all 8 stands, only materials differ) ----
+  const seatStripGeo = new THREE.BoxGeometry(STAND_WIDTH - 0.6, 0.06, 0.5);
+  const railBarGeo = new THREE.BoxGeometry(STAND_WIDTH - 0.4, 0.06, 0.06);
+  const railPostGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.55, 5);
+  const railMat = new THREE.MeshStandardMaterial({ color: 0x1c1e22, roughness: 0.6, metalness: 0.2 });
+  disposables.push({ geometry: seatStripGeo }, { geometry: railBarGeo }, { geometry: railPostGeo });
+  disposables.push({ material: railMat });
+  const SEAT_STRIP_COLORS = [0x1c3fa8, 0xa81c2e, 0x1c8a3f, 0xd8ac2a];
+
+  // crowd card plane: an inclined billboard behind the 3D rows (upper tier), painted with hundreds
+  // of simplified figures. Two textures (frameA/frameB) crossfaded via opacity for a cheap "crowd
+  // shifting" animation, rate/mix scaled by stand energy in update().
+  const crowdCardGeo = new THREE.PlaneGeometry(CROWD_CARD_WIDTH, CROWD_CARD_HEIGHT);
+  disposables.push({ geometry: crowdCardGeo });
+
   const instancedMeshes: THREE.InstancedMesh[] = []; // one per (stand, variant)
   const instancedData: StandInstanceData[] = [];
   const standEnergy: number[] = []; // per-stand smoothed cheer energy (ramps toward 1 = normal, 2 = cheering)
   const standOfMesh: number[] = []; // parallel to instancedMeshes/instancedData: which stand index owns it
+
+  interface CrowdCardRig {
+    mesh: THREE.Mesh;
+    material: THREE.MeshBasicMaterial;
+    frameA: THREE.CanvasTexture;
+    frameB: THREE.CanvasTexture;
+    standIdx: number;
+    phase: number;
+  }
+  const crowdCards: CrowdCardRig[] = [];
 
   // ---- camera prop geometry (shared) — body + lens + emissive-blue monitor + strap hint ----
   const legGeo = new THREE.CylinderGeometry(0.03, 0.03, 1.1, 5);
@@ -396,28 +579,92 @@ export async function buildSpectators(curve: THREE.CatmullRomCurve3): Promise<Sp
         standRoot.add(post);
       }
     }
-    const awningMat = new THREE.MeshStandardMaterial({ color: STAND_AWNING_COLORS[s % STAND_AWNING_COLORS.length], roughness: 0.6 });
+    const teamColor = STAND_AWNING_COLORS[s % STAND_AWNING_COLORS.length];
+    const awningMat = new THREE.MeshStandardMaterial({ color: teamColor, roughness: 0.6 });
     disposables.push({ material: awningMat });
     const roof = new THREE.Mesh(roofGeo, awningMat);
     roof.position.set(0, ROOF_Y, -(STAND_DEPTH * (TIER_COUNT - 1)) / 2);
     standRoot.add(roof);
 
-    // 2 side panels
+    // 2 side panels, subtly tinted with this stand's team/awning color instead of flat structure gray
+    const panelMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(teamColor).lerp(new THREE.Color(0x8a8f96), 0.55),
+      roughness: 0.85,
+    });
+    disposables.push({ material: panelMat });
     for (const px of [-STAND_WIDTH / 2 - 0.1, STAND_WIDTH / 2 + 0.1]) {
-      const panel = new THREE.Mesh(panelGeo, structureMat);
+      const panel = new THREE.Mesh(panelGeo, panelMat);
       panel.position.set(px, (TIER_COUNT * TIER_HEIGHT) / 2, -(STAND_DEPTH * (TIER_COUNT - 1)) / 2);
       standRoot.add(panel);
     }
 
-    // ---- crowd, seated across the 3 tiers — one InstancedMesh per variant, ~37 instances each ----
+    // alternating seat-row color strips on each tier's tread (thin colored boxes, cheap "painted
+    // seats" dressing) + a safety railing (bar + 2 end posts) along each tier's leading edge
+    for (let t = 0; t < TIER_COUNT; t++) {
+      const stripMat = new THREE.MeshStandardMaterial({
+        color: SEAT_STRIP_COLORS[(s + t) % SEAT_STRIP_COLORS.length],
+        roughness: 0.7,
+      });
+      disposables.push({ material: stripMat });
+      const strip = new THREE.Mesh(seatStripGeo, stripMat);
+      strip.position.set(0, TIER_HEIGHT * t + TIER_HEIGHT + 0.03, -(t * STAND_DEPTH) - STAND_DEPTH * 0.35);
+      standRoot.add(strip);
+
+      const railBar = new THREE.Mesh(railBarGeo, railMat);
+      railBar.position.set(0, TIER_HEIGHT * (t + 1) + 0.5, -(t * STAND_DEPTH) - STAND_DEPTH + 0.1);
+      standRoot.add(railBar);
+      for (const px of [-STAND_WIDTH / 2 + 0.3, STAND_WIDTH / 2 - 0.3]) {
+        const post = new THREE.Mesh(railPostGeo, railMat);
+        post.position.set(px, TIER_HEIGHT * (t + 1) + 0.27, -(t * STAND_DEPTH) - STAND_DEPTH + 0.1);
+        standRoot.add(post);
+      }
+    }
+
+    // crowd texture card: inclined billboard behind the 3D crowd rows (upper tier / roofline area),
+    // painted with hundreds of simplified figures -- the realism multiplier at ~zero draw cost.
+    {
+      const frameA = buildCrowdCardTexture(s * 2);
+      const frameB = buildCrowdCardTexture(s * 2 + 1);
+      const cardMat = new THREE.MeshBasicMaterial({
+        map: frameA,
+        transparent: true,
+        alphaTest: 0.1,
+        side: THREE.DoubleSide,
+      });
+      disposables.push({ material: cardMat });
+      const card = new THREE.Mesh(crowdCardGeo, cardMat);
+      // sits in the headroom strip between the top tier and the roof -- verified to clear ROOF_Y
+      // by the seating-clearance-style check just below the stand-build loop.
+      card.position.set(0, TIER_COUNT * TIER_HEIGHT + CROWD_CARD_HEIGHT * 0.5 + 0.05, -(STAND_DEPTH * (TIER_COUNT - 1)) - 0.4);
+      card.rotation.x = -0.12; // slight backward incline so it reads as receding upper tiers
+      standRoot.add(card);
+      crowdCards.push({ mesh: card, material: cardMat, frameA, frameB, standIdx: s, phase: Math.random() * Math.PI * 2 });
+    }
+
+    // ---- crowd, seated across the 3 tiers x 2 rows per tier — one InstancedMesh per variant ----
     standEnergy.push(1);
     const color = new THREE.Color();
     const tmpMat = new THREE.Matrix4();
     const tmpQuat = new THREE.Quaternion();
-    const tmpScale = new THREE.Vector3(1, 1, 1);
+    const tmpScale = new THREE.Vector3(CROWD_SCALE_BOOST, CROWD_SCALE_BOOST, CROWD_SCALE_BOOST);
+    // Precompute a flat list of (tier, row, acrossSlot) seat slots shared across all 3 variants so
+    // the whole stand fills densely and evenly instead of each variant re-randomizing independently.
+    const totalSeats = TIER_COUNT * CROWD_ROWS_PER_TIER * CROWD_PER_ROW;
+    const seatSlots: { tier: number; row: number; slot: number }[] = [];
+    for (let tier = 0; tier < TIER_COUNT; tier++) {
+      for (let row = 0; row < CROWD_ROWS_PER_TIER; row++) {
+        for (let slot = 0; slot < CROWD_PER_ROW; slot++) seatSlots.push({ tier, row, slot });
+      }
+    }
+    // shuffle so consecutive instances (which get split across the 3 variant meshes) don't all land
+    // in the same tier/row, keeping each variant's model visually mixed across the whole stand
+    for (let i = seatSlots.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [seatSlots[i], seatSlots[j]] = [seatSlots[j], seatSlots[i]];
+    }
     let globalIdx = 0;
     for (let v = 0; v < personGeos.length; v++) {
-      const count = v < personGeos.length - 1 ? CROWD_PER_VARIANT : CROWD_PER_STAND - CROWD_PER_VARIANT * (personGeos.length - 1);
+      const count = v < personGeos.length - 1 ? CROWD_PER_VARIANT : totalSeats - CROWD_PER_VARIANT * (personGeos.length - 1);
       const crowdMat = new THREE.MeshStandardMaterial({ roughness: 0.9, vertexColors: false });
       disposables.push({ material: crowdMat });
       const instanced = new THREE.InstancedMesh(personGeos[v], crowdMat, count);
@@ -427,17 +674,19 @@ export async function buildSpectators(curve: THREE.CatmullRomCurve3): Promise<Sp
       const angle: number[] = [];
       const behavior: Behavior[] = [];
       for (let i = 0; i < count; i++) {
-        const tier = globalIdx % TIER_COUNT;
-        const acrossJitter = (Math.random() - 0.5) * (STAND_WIDTH - 1.2);
-        const depthJitter = (Math.random() - 0.5) * (STAND_DEPTH - 0.6);
-        const bx = acrossJitter;
+        const { tier, row, slot } = seatSlots[globalIdx % seatSlots.length];
+        // even spread across the tread width, with small per-seat jitter for a less robotic grid
+        const acrossStep = (STAND_WIDTH - 1.2) / CROWD_PER_ROW;
+        const acrossJitter = (Math.random() - 0.5) * acrossStep * 0.5;
+        const bx = -(STAND_WIDTH - 1.2) / 2 + acrossStep * (slot + 0.5) + acrossJitter;
         // Person geometry's bottom is at local y=0. Seat it flush on this tier's TOP surface, minus a
         // small sink so a standing-pose model reads as seated (legs partially hidden behind the tier riser).
         const seatSink = usingModels ? 0.12 : 0;
         const by = TIER_HEIGHT * (tier + 1) - seatSink;
-        // Pull instances forward off the tier's leading edge (away from the riser in front) so feet
-        // don't poke through the next tier down; bias jitter range toward the back half of the tread.
-        const bz = -(tier * STAND_DEPTH) - STAND_DEPTH / 2 + depthJitter * 0.5 - STAND_DEPTH * 0.15;
+        // 2 rows per tier: front row nearer the riser edge, back row further into the tread depth.
+        const rowStep = (STAND_DEPTH - 0.6) / CROWD_ROWS_PER_TIER;
+        const depthJitter = (Math.random() - 0.5) * rowStep * 0.3;
+        const bz = -(tier * STAND_DEPTH) - STAND_DEPTH * 0.15 - rowStep * (row + 0.5) + depthJitter;
         const b = new THREE.Vector3(bx, by, bz);
         base.push(b);
         phase.push(Math.random() * Math.PI * 2);
@@ -552,7 +801,7 @@ export async function buildSpectators(curve: THREE.CatmullRomCurve3): Promise<Sp
   const scratchMat = new THREE.Matrix4();
   const scratchQuat = new THREE.Quaternion();
   const scratchPos = new THREE.Vector3();
-  const scratchScale = new THREE.Vector3(1, 1, 1);
+  const scratchScale = new THREE.Vector3(CROWD_SCALE_BOOST, CROWD_SCALE_BOOST, CROWD_SCALE_BOOST);
   const camWorldPos = new THREE.Vector3();
   const camToTarget = new THREE.Vector3();
   const standWorldPos = stands; // already world-space centers, reused for proximity checks
@@ -625,6 +874,20 @@ export async function buildSpectators(curve: THREE.CatmullRomCurve3): Promise<Sp
       f.plane.rotation.z = Math.sin(tSec * FLAG_FLUTTER_FREQ + f.phase) * FLAG_FLUTTER_Z_AMP;
     }
 
+    // crowd cards: crossfade frameA<->frameB at ~CROWD_CARD_CROSSFADE_HZ, rate/mix scaled by this
+    // stand's energy ramp (calm shimmer idle, faster/more pronounced when cars are nearby/cheering).
+    for (const card of crowdCards) {
+      const energy = standEnergy[card.standIdx]; // 1 = idle, 2 = cheering
+      const rate = CROWD_CARD_CROSSFADE_HZ * (0.5 + 0.5 * (energy - 1) * 2); // ~0.7Hz idle -> ~1.4Hz+ cheering
+      const mix = 0.5 + 0.5 * Math.sin(tSec * rate * Math.PI * 2 + card.phase);
+      const useB = mix > 0.5;
+      const nextMap = useB ? card.frameB : card.frameA;
+      if (card.material.map !== nextMap) {
+        card.material.map = nextMap;
+        card.material.needsUpdate = true;
+      }
+    }
+
     // TV cameras (+ joined operator): yaw-lerp toward nearest car
     for (let i = 0; i < cameras.length; i++) {
       const rig = cameras[i];
@@ -652,6 +915,10 @@ export async function buildSpectators(curve: THREE.CatmullRomCurve3): Promise<Sp
     for (const mesh of instancedMeshes) mesh.dispose();
     for (const m of flagMaterials) m.dispose();
     checkerTexture.dispose();
+    for (const card of crowdCards) {
+      card.frameA.dispose();
+      card.frameB.dispose();
+    }
     for (const d of disposables) {
       d.geometry?.dispose();
       if (d.material) {
